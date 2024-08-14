@@ -58,18 +58,47 @@ async function createUserInKeycloak(userData) {
     throw error;
   }
 }
-
 exports.createUser = async (req, res) => {
   try {
-    const { userName, firstName, lastName, email } = req.body;
+    const {
+      userName,
+      firstName,
+      lastName,
+      email,
+      phoneNo,
+      OrganizationId,
+      userType,
+      role,
+      profile,
+      userStatus,
+      gender,
+      employeeNo,
+      identificationNo,
+      citizenship,
+      residentOf,
+      isVisitor
+    } = req.body;
 
     const user = new User({
       userName,
       firstName,
       lastName,
       email,
+      phoneNo,
+      OrganizationId,
+      userType,
+      role,
+      profile,
+      userStatus,
+      gender,
+      employeeNo,
+      identificationNo,
+      citizenship,
+      residentOf,
+      isVisitor,
     });
-     await createUserInKeycloak(user);
+
+    await createUserInKeycloak(user); // Assuming this function handles Keycloak user creation
     const savedUser = await user.save();
 
     res.status(201).json({ user: savedUser });

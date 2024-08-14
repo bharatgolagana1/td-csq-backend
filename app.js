@@ -13,6 +13,13 @@ const airportMasterRoutes = require('./src/routes/airportMasterRoutes');
 const feedbackRoutes = require('./src/routes/feedbackRoutes');
 const customerRoutes = require('./src/routes/customerRoutes');
 const userRoutes = require('./src/routes/userRoutes');
+const assessmentCycleRoutes = require('./src/routes/assessmentCycleRoutes');
+const userFeedbackRoutes = require('./src/routes/userFeedbackRoutes');
+const keycloakUserRoutes = require('./src/routes/keycloakUserRoutes');
+const rolesRoutes = require('./src/features/roles/rolesRoutes');
+const moduleRoutes = require('./src/features/modules/moduleRoutes');
+const taskRoutes = require('./src/features/tasks/taskRoutes');
+const permissionRoutes = require('./src/features/permissions/permissionRoutes');
 
 // Initialize environment variables
 dotenv.config({ path: './dot.env' });
@@ -49,6 +56,14 @@ app.use('/air', airportMasterRoutes);
 app.use('/feedback', feedbackRoutes);
 app.use('/user', userRoutes);
 app.use('/customer', customerRoutes);
+app.use('/assessment',assessmentCycleRoutes);
+app.use('/userfeedback',userFeedbackRoutes);
+app.use("/me" , keycloakUserRoutes);
+app.use("/modules", moduleRoutes);
+app.use("/tasks", taskRoutes);
+app.use("/roles", rolesRoutes);
+app.use("/permissions", permissionRoutes);
+
 
 
 // Start the server

@@ -1,26 +1,35 @@
-const axios = require("axios");
+const jwt = require('jsonwebtoken');
 
-async function getAccessToken() {
-  try {
-    const response = await axios.post(
-      `${process.env.KEYCLOAK_URL}/realms/${process.env.KEYCLOAK_REALM_NAME}/protocol/openid-connect/token`,
-      new URLSearchParams({
-        client_id: process.env.KEYCLOAK_CLIENT_ID,
-        client_secret: process.env.KEYCLOAK_SECRET,
-        grant_type: "client_credentials",
-      }),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
-    );
+function tokenValidator(request) {
+  // get authorization token from request
+  const authHeader = request.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-    return response.data.access_token;
-  } catch (error) {
-    console.error("Failed to get access token", error);
-    throw error;
+  const payload = jwt.decode(token, { json: true });
+
+  if (
+    payload?.iss !== undefined &&
+    payload?.sub !== undefined &&
+    payload?.aud !== undefined &&
+    payload?.exp !== undefined &&
+    payload?.iat !== undefined 
+  ) {
+    console.log('Valid token');
+
+    return {
+      ...payload,
+      iss: payload.iss,
+      sub: payload.sub,
+      aud: payload.aud,
+      exp: payload.exp,
+      iat: payload.iat,
+      email: payload.email,
+      username: payload.preferred_username,
+    };
+  } else {
+    console.log('Invalid token');
+    return null;
   }
 }
 
-module.exports = { getAccessToken };
+module.exports = tokenValidator;
