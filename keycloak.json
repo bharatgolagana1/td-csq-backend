@@ -1,0 +1,11 @@
+{
+  "realm": "myrealm",
+  "auth-server-url": "http://localhost:8180/",
+  "ssl-required": "external",
+  "resource": "csq",
+  "public-client": true,
+  "confidential-port": 0,
+  "credentials": {
+    "secret": "CAQ1gT0Bu5pd38Sqd5zTJ92igBpIi13w"
+  }
+}

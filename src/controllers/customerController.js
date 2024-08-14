@@ -44,3 +44,21 @@ exports.deleteCustomer = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.deleteCustomers = async (req, res) => {
+  try {
+    const { ids } = req.body; 
+    const deletedCustomers = await Customer.deleteMany({
+      _id: { $in: ids }
+    });
+    
+    if (deletedCustomers.deletedCount === 0) {
+      return res.status(404).json({ message: 'No customers found' });
+    }
+
+    res.json({ message: `${deletedCustomers.deletedCount} customer(s) deleted` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
