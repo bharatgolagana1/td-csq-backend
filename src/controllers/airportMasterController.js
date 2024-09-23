@@ -44,3 +44,32 @@ exports.deleteAirport = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.getAirportById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const airport = await Airport.findById(id);
+    if (!airport) {
+      return res.status(404).json({ message: 'Airport not found' });
+    }
+    res.json(airport);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.deleteAirports = async (req, res) => {
+  try {
+    const { ids } = req.body; // Expecting an array of IDs in the request body
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'Please provide an array of IDs to delete.' });
+    }
+    const result = await Airport.deleteMany({ _id: { $in: ids } });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'No airports found to delete.' });
+    }
+    res.json({ message: `${result.deletedCount} airports deleted.` });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

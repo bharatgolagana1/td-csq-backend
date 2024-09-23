@@ -1,37 +1,75 @@
 const Permission = require("./permissionModel");
+const mongoose = require('mongoose');
 
-exports.getAllPermissions = async (req, res) => {
-  try {
-    const permissions = await Permission.find();
-    res.status(200).json(permissions);
-  } catch (error) {
-    res
-      .status(500)
-      .send({ message: "Failed to fetch permissions", error: error.message });
-  }
-};
+
 
 exports.updatePermissions = async (req, res) => {
-  const { newPermissions } = req.body;
+  const newPermissions = req.body; // Directly use req.body as newPermissions
+
+  // Validate input
   if (!Array.isArray(newPermissions)) {
     return res
       .status(400)
       .send({ message: "Invalid input, array of permissions required" });
   }
+
   try {
-    // Remove all permissions and add new ones - This is very destructive and should be adjusted according to real use cases
     await Permission.deleteMany({});
     const insertedPermissions = await Permission.insertMany(newPermissions);
-    res.status(200).json({
-      message: "Permissions updated successfully",
-      permissions: insertedPermissions,
-    });
+    res.status(200).json(insertedPermissions);
   } catch (error) {
     res
       .status(500)
       .send({ message: "Failed to update permissions", error: error.message });
   }
 };
+
+
+exports.getAllPermissions = async (req, res) => {
+  try {
+    const permissions = await Permission.aggregate([
+      {
+        $lookup: {
+          from: "roles",
+          localField: "roleId",
+          foreignField: "_id",
+          as: "role",
+        },
+      },
+      {
+        $unwind: "$role",
+      },
+      {
+        $lookup: {
+          from: "tasks",
+          localField: "taskId",
+          foreignField: "_id",
+          as: "task",
+        },
+      },
+      {
+        $unwind: "$task",
+      },
+      {
+        $project: {
+          _id: 0,
+          roleId: "$role._id",
+          roleName: "$role.name",
+          taskId: "$task._id",
+          taskName: "$task.name",
+          taskValue: "$task.task_value",
+          enable: 1,
+        },
+      },
+    ]);
+
+    res.status(200).json(permissions);
+  } catch (error) {
+    res.status(500).json({ message: "Error retrieving user permissions", error });
+  }
+};
+
+
 
 exports.getPermissionsByRole = async (req, res) => {
   const { roleId } = req.params;
