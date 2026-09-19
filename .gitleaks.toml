@@ -1,0 +1,19 @@
+title = "CSQ secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "mongodb-connection-string"
+description = "MongoDB connection string with inline credentials"
+regex = '''mongodb(\+srv)?:\/\/[^\s:@]+:[^\s:@]+@'''
+tags = ["database", "credentials"]
+
+[[rules]]
+id = "keycloak-client-secret"
+description = "Keycloak client secret in config"
+regex = '''(?i)"secret"\s*:\s*"[A-Za-z0-9]{24,}"'''
+tags = ["keycloak", "credentials"]
+
+[allowlist]
+paths = ['''\.gitleaks\.toml$''', '''(^|/)fixtures/''']

@@ -1,2 +1,13 @@
 node_modules/
-package-lock.json
+dist/
+coverage/
+*.tsbuildinfo
+
+# secrets never belong in the tree
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
