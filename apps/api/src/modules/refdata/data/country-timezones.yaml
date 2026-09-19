@@ -1,0 +1,10 @@
+# The IANA zone a country's civil time keeps.
+#
+# Used only by the airport seed, which needs a zone per airport and gets one
+# from OurAirports. A country that observes more than one zone is deliberately
+# absent rather than mapped to its largest: the loader must then refuse the row
+# and say so, because guessing a zone means guessing when a cycle opens.
+#
+# India keeps one zone, IST, with no daylight saving.
+
+IN: Asia/Kolkata

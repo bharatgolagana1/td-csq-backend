@@ -1,0 +1,336 @@
+# The ACFI Cargo Service Quality instrument, Phase 1.
+#
+# Transcribed from the two published survey forms:
+#   01_CSQ Survey Form (International).pdf   5 printed sections, 27 parameters
+#   02_CSQ Survey Form (Domestic).pdf        4 printed sections, 23 parameters
+#
+# The 23 parameters of the domestic form are the shared core: 8 infrastructure,
+# 6 security and safety, 5 process, 4 trade facilitation. The international form
+# asks those same 23 and adds 4 more that only exist where customs does:
+# EDI and SWIFT connectivity, disposal of uncleared cargo, customs officers on
+# site, and airline and PGA offices on site. Dropping those four would mean the
+# international assessment scored a domestic instrument.
+#
+# Conventions in this file
+#
+#   code         ordinal free, ACFI.<head>.<parameter>. The printed number is
+#                NOT part of it: the international form numbers trade
+#                facilitation as section 5 and the domestic form numbers it 4,
+#                so a code built from the printed number names two different
+#                parameters depending on which sheet it was read from.
+#   formRef      the printed number, per form. Display only.
+#   text         the wording the forms share. Where they differ, the
+#                international wording, which is the longer one.
+#   textByScope  the exact wording of a form that words the parameter
+#                differently. Only present where the printed forms differ.
+#   scopes       which printed form the parameter appears on.
+#
+# The printed forms carry a 1 to 10 column. CSQ renders this same question text
+# on the five point scale plus NA; see packages/contracts/src/rating.ts. The
+# scale is not a property of the bank.
+
+bank:
+  code: ACFI_CSQ
+  title: ACFI Cargo Service Quality assessment
+  description: >-
+    The Air Cargo Forum India customer satisfaction instrument for air cargo
+    terminal operators, as published for the international and domestic forms.
+  sourceDocuments:
+    - 01_CSQ Survey Form (International).pdf
+    - 02_CSQ Survey Form (Domestic).pdf
+
+notes: >-
+  Phase 1. Transcribed from the published ACFI forms with no rewording.
+
+questions:
+  - code: ACFI.INFRA.CARGO_STORAGE_CAPACITY
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.1", DOMESTIC: "1.1" }
+    text: >-
+      Availability of adequate cargo infrastructure/ storage areas/warehouse for
+      safe/secured handling of cargo.
+
+  - code: ACFI.INFRA.USER_AMENITIES
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.2", DOMESTIC: "1.2" }
+    text: >-
+      Availability of basic amenities at cargo complex viz. entrance lobby
+      (Reception Area)/ Water-Coolers with Cool Potable Water/Toilets/Car-Parking/
+      Truck-Parking/Canteen Facility(s)/ Kiosks Public Waiting Areas & Signages
+      for public/users.
+
+  - code: ACFI.INFRA.HANDLING_EQUIPMENT
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.3", DOMESTIC: "1.3" }
+    text: >-
+      Availability of adequate cargo serviceable equipment/ facilities areas/
+      infrastructure for smooth cargo handling on city-side/ air side/ warehouse
+
+  - code: ACFI.INFRA.WEIGHING_SCALE_WMS_INTERFACE
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.4", DOMESTIC: "1.4" }
+    text: >-
+      Availability of electronic weighing scales having interface with WMS
+      (Warehouse Management System).
+
+  - code: ACFI.INFRA.EXAMINATION_DELIVERY_TIME
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.5", DOMESTIC: "1.5" }
+    text: >-
+      Process time taken for Examination / Delivery of Goods/ Upliftment of Cargo
+
+  - code: ACFI.INFRA.SCALE_CALIBRATION
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.6", DOMESTIC: "1.6" }
+    text: >-
+      Periodically Calibrated Weighing Scales.
+
+  - code: ACFI.INFRA.TC_BC_GENERATION
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.7", DOMESTIC: "1.7" }
+    text: >-
+      Smooth generation of Terminal Charges (TC)/ Bank Challan (BC) facilities and
+      acceptance of cargo at Truck Dock (TD)/ Bonded Gates (BDG) area.
+    textByScope:
+      DOMESTIC: >-
+        Smooth generation of Terminal Charges (TC)/ Bank Challan (BC) facilities
+        and acceptance of cargo at cargo holding area/staging area.
+
+  - code: ACFI.INFRA.WDO_BC_GENERATION
+    categoryCode: INFRA
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "1.8", DOMESTIC: "1.8" }
+    text: >-
+      Smooth generation of Warehouse Delivery Order (WDO) / Bank Challan (BC)
+      facilities and delivery of cleared cargo.
+
+  - code: ACFI.SEC.CITY_SIDE_FRISKING
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.1", DOMESTIC: "2.1" }
+    text: >-
+      Whether adequate security personnel deployed for frisking/checking (viz.
+      HHMD/DFMD etc.) of users/visitors at the city-side of cargo terminal while
+      entering/existing from the warehouse/examination area.
+
+  - code: ACFI.SEC.TRAINED_SECURITY_DEPLOYMENT
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.2", DOMESTIC: "2.2" }
+    text: >-
+      Whether well-trained Security personnel deployed within the Air Cargo
+      Terminal to ensure safety/ security of cargo in all warehouse/regulating
+      traffic on the city-side.
+
+  - code: ACFI.SEC.ENTRY_PASS_ADMINISTRATION
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.3", DOMESTIC: "2.3" }
+    text: >-
+      Whether the Entry Pass (Daily/ Monthly/Yearly) for access to Cargo Terminal
+      is functioning efficiently & adequately staffed to organize, renewal as per
+      laid-down guidelines.
+
+  - code: ACFI.SEC.CCTV_LAND_SIDE
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.4", DOMESTIC: "2.4" }
+    text: >-
+      Fully Functional CCTV coverage of all Land Side areas.
+
+  - code: ACFI.SEC.FIRE_FIGHTING_READINESS
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.5", DOMESTIC: "2.5" }
+    text: >-
+      Whether adequate fire-fighting equipment installed, and awareness
+      /emergency numbers related signage displayed for safety of personnel &
+      materials stored at the Cargo Terminal.
+
+  - code: ACFI.SEC.COLD_CHAIN_DG_SIGNAGE
+    categoryCode: SEC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "2.6", DOMESTIC: "2.6" }
+    text: >-
+      Whether the temperature maintained at Cold storage is being displayed
+      outside the chamber and Dangerous Goods Regulations related signage
+      displayed at the exclusive Dangerous Goods shed for safety & awareness
+      including separate chamber created for Radio-Active Materials storage etc.
+
+  - code: ACFI.PROC.ONLINE_TRANSACTION_SYSTEM
+    categoryCode: PROC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.1", DOMESTIC: "3.1" }
+    text: >-
+      Whether the entire air-cargo transactions and warehousing operations are
+      through online web-based I.T. System working efficiently.
+
+  - code: ACFI.PROC.TRUCK_SLOT_TOKEN_SYSTEM
+    categoryCode: PROC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.2", DOMESTIC: "3.2" }
+    text: >-
+      Whether I.T. System installed has a mechanism for allotting a timeslot to
+      cargo trucks for off-loading/ loading of cargo to regulate the vehicular
+      traffic as per Token-System.
+
+  - code: ACFI.PROC.UNITISATION_SEGREGATION_TIME
+    categoryCode: PROC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.3", DOMESTIC: "3.3" }
+    text: >-
+      Time taken for unitization / segregation of cargo within a reasonable time
+      frame.
+
+  - code: ACFI.PROC.CUSTOMS_EDI_SWIFT_CONNECTIVITY
+    categoryCode: PROC
+    scopes: [INTERNATIONAL]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.4" }
+    text: >-
+      Whether the I.T System (WMS) has online connectivity with Customs EDI
+      System including with PGAs (Participating Govt. Agency(s)) under SWIFT for
+      faster clearance of EXIM Cargo.
+
+  - code: ACFI.PROC.SOP_DISPLAY
+    categoryCode: PROC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.5", DOMESTIC: "3.4" }
+    text: >-
+      Whether standard operating procedures for various EXIM operations have been
+      displayed within the cargo terminal for visitors/ users/ trade awareness.
+    textByScope:
+      DOMESTIC: >-
+        Whether standard operating procedures for various cargo processing
+        (inbound/outbound) operations have been displayed within the cargo
+        terminal for visitors/ users/ trade awareness.
+
+  - code: ACFI.PROC.HANDLING_MANPOWER
+    categoryCode: PROC
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.6", DOMESTIC: "3.5" }
+    text: >-
+      Whether adequate personnel have been deployed by CTO for safe and secured
+      handling of cargo at various processes involved in EXIM operations.
+    textByScope:
+      DOMESTIC: >-
+        Whether adequate personnel have been deployed by CTO for safe and secured
+        handling of cargo at various processes involved in air cargo operations.
+
+  - code: ACFI.PROC.UNCLEARED_CARGO_DISPOSAL
+    categoryCode: PROC
+    scopes: [INTERNATIONAL]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "3.7" }
+    text: >-
+      Whether the mechanism for disposal of uncleared/ unclaimed cargo has been
+      created and periodic e-auctions held to keep space for fresh cargo under
+      the Customs Act, 1962.
+
+  - code: ACFI.TRADE.CUSTOMS_OFFICER_AVAILABILITY
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "4.1" }
+    text: >-
+      Whether appropriate level Customs officials with adequate administrative
+      powers are available at the cargo terminal during working hours to attend
+      the trade/ users and provide Customs clearance on site.
+
+  - code: ACFI.TRADE.AIRLINE_PGA_OFFICES
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "4.2" }
+    text: >-
+      Availability of operating airline offices and PGAs offices within the cargo
+      terminal for facilitating the trade/users.
+
+  - code: ACFI.TRADE.BANKING_AVAILABILITY
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "4.3", DOMESTIC: "4.4" }
+    text: >-
+      Availability of banks (Including ATMs) for users to transact business.
+
+  - code: ACFI.TRADE.GRIEVANCE_REDRESSAL
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "5.1", DOMESTIC: "4.1" }
+    text: >-
+      Whether the trade-facilitation mechanism/grievance redressal system used by
+      the CTO engages stakeholders or not on periodical basis.
+
+  - code: ACFI.TRADE.OVERALL_EXPERIENCE
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "5.2", DOMESTIC: "4.2" }
+    text: >-
+      Overall experience at the Cargo Terminal Operators with their personnel
+      attitude towards trade/users.
+
+  - code: ACFI.TRADE.INCIDENT_INVESTIGATION
+    categoryCode: TRADE
+    scopes: [INTERNATIONAL, DOMESTIC]
+    answerType: RATING_5
+    scored: true
+    formRef: { INTERNATIONAL: "5.3", DOMESTIC: "4.3" }
+    text: >-
+      Whether any mechanism has been created/ evolved to investigate/ analyse the
+      reasons for any mishap /untoward incident and report prepared to avoid such
+      recurrences and remedial measures taken.
