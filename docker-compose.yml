@@ -1,0 +1,41 @@
+# Local development stack. Not a production topology: in production Mongo is
+# Atlas over PrivateLink, Redis is ElastiCache, and Keycloak runs as its own
+# service with a real database behind it.
+services:
+  mongo:
+    image: mongo:7.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      # a replica set is required, not optional: multi-document transactions
+      # are what make the sampling batch commit atomically
+      test: ["CMD", "mongosh", "--quiet", "--eval", "rs.status().ok || rs.initiate()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      # local only. production admin credentials come from Secrets Manager.
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_DEV_PASSWORD:-admin}
+      KC_HEALTH_ENABLED: "true"
+    ports: ["8180:8080"]
+    volumes: ["./deploy/keycloak/realm:/opt/keycloak/data/import:ro"]
+
+volumes:
+  mongo-data:

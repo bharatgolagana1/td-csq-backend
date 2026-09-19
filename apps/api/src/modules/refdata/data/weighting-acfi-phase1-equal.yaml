@@ -1,0 +1,90 @@
+# Equal weighting for the ACFI Phase 1 instrument.
+#
+# ACFI has not published differential weights. EQUAL records that as a fact
+# about the standard rather than as an absence: every head counts the same,
+# and every parameter counts the same within its head. When ACFI agrees a
+# differential set, it arrives as a new profile version with basis CONFIGURED
+# and the scores it produces say which profile produced them.
+#
+# Derivation, reproducible from the bank file:
+#   categories   10000 / 4 = 2500 each, on both forms
+#   questions    10000 / (parameters in that head on that form), largest
+#                remainder to the earlier codes where the division is not
+#                exact, so each head totals exactly 10000 rather than 9996
+#
+# The two forms carry different question sets, so they carry different
+# tables. The international form asks 27 parameters and the domestic 23.
+
+profile:
+  code: ACFI_PHASE1_EQUAL
+  title: ACFI Phase 1, equal weighting
+  basis: EQUAL
+  notes: >-
+    Equal weights within and across heads. No differential weighting has been
+    agreed by ACFI for Phase 1.
+
+weights:
+  INTERNATIONAL:
+    categories:
+      INFRA: 2500
+      SEC: 2500
+      PROC: 2500
+      TRADE: 2500
+    questions:
+      ACFI.INFRA.CARGO_STORAGE_CAPACITY: 1250
+      ACFI.INFRA.USER_AMENITIES: 1250
+      ACFI.INFRA.HANDLING_EQUIPMENT: 1250
+      ACFI.INFRA.WEIGHING_SCALE_WMS_INTERFACE: 1250
+      ACFI.INFRA.EXAMINATION_DELIVERY_TIME: 1250
+      ACFI.INFRA.SCALE_CALIBRATION: 1250
+      ACFI.INFRA.TC_BC_GENERATION: 1250
+      ACFI.INFRA.WDO_BC_GENERATION: 1250
+      ACFI.SEC.CITY_SIDE_FRISKING: 1667
+      ACFI.SEC.TRAINED_SECURITY_DEPLOYMENT: 1667
+      ACFI.SEC.ENTRY_PASS_ADMINISTRATION: 1667
+      ACFI.SEC.CCTV_LAND_SIDE: 1667
+      ACFI.SEC.FIRE_FIGHTING_READINESS: 1666
+      ACFI.SEC.COLD_CHAIN_DG_SIGNAGE: 1666
+      ACFI.PROC.ONLINE_TRANSACTION_SYSTEM: 1429
+      ACFI.PROC.TRUCK_SLOT_TOKEN_SYSTEM: 1429
+      ACFI.PROC.UNITISATION_SEGREGATION_TIME: 1429
+      ACFI.PROC.CUSTOMS_EDI_SWIFT_CONNECTIVITY: 1429
+      ACFI.PROC.SOP_DISPLAY: 1428
+      ACFI.PROC.HANDLING_MANPOWER: 1428
+      ACFI.PROC.UNCLEARED_CARGO_DISPOSAL: 1428
+      ACFI.TRADE.CUSTOMS_OFFICER_AVAILABILITY: 1667
+      ACFI.TRADE.AIRLINE_PGA_OFFICES: 1667
+      ACFI.TRADE.BANKING_AVAILABILITY: 1667
+      ACFI.TRADE.GRIEVANCE_REDRESSAL: 1667
+      ACFI.TRADE.OVERALL_EXPERIENCE: 1666
+      ACFI.TRADE.INCIDENT_INVESTIGATION: 1666
+  DOMESTIC:
+    categories:
+      INFRA: 2500
+      SEC: 2500
+      PROC: 2500
+      TRADE: 2500
+    questions:
+      ACFI.INFRA.CARGO_STORAGE_CAPACITY: 1250
+      ACFI.INFRA.USER_AMENITIES: 1250
+      ACFI.INFRA.HANDLING_EQUIPMENT: 1250
+      ACFI.INFRA.WEIGHING_SCALE_WMS_INTERFACE: 1250
+      ACFI.INFRA.EXAMINATION_DELIVERY_TIME: 1250
+      ACFI.INFRA.SCALE_CALIBRATION: 1250
+      ACFI.INFRA.TC_BC_GENERATION: 1250
+      ACFI.INFRA.WDO_BC_GENERATION: 1250
+      ACFI.SEC.CITY_SIDE_FRISKING: 1667
+      ACFI.SEC.TRAINED_SECURITY_DEPLOYMENT: 1667
+      ACFI.SEC.ENTRY_PASS_ADMINISTRATION: 1667
+      ACFI.SEC.CCTV_LAND_SIDE: 1667
+      ACFI.SEC.FIRE_FIGHTING_READINESS: 1666
+      ACFI.SEC.COLD_CHAIN_DG_SIGNAGE: 1666
+      ACFI.PROC.ONLINE_TRANSACTION_SYSTEM: 2000
+      ACFI.PROC.TRUCK_SLOT_TOKEN_SYSTEM: 2000
+      ACFI.PROC.UNITISATION_SEGREGATION_TIME: 2000
+      ACFI.PROC.SOP_DISPLAY: 2000
+      ACFI.PROC.HANDLING_MANPOWER: 2000
+      ACFI.TRADE.BANKING_AVAILABILITY: 2500
+      ACFI.TRADE.GRIEVANCE_REDRESSAL: 2500
+      ACFI.TRADE.OVERALL_EXPERIENCE: 2500
+      ACFI.TRADE.INCIDENT_INVESTIGATION: 2500

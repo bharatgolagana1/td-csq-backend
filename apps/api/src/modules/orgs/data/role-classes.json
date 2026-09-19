@@ -1,0 +1,117 @@
+[
+  {
+    "code": "SUPER_ADMIN",
+    "label": "Super administrator",
+    "description": "Runs the standard: approves registrations, holds sampling locks for review and administers every organisation.",
+    "orgTypes": ["PLATFORM"],
+    "capabilities": [
+      "orgs:read",
+      "orgs:write",
+      "orgs.members:read",
+      "orgs.members:write",
+      "orgs.registry:read",
+      "orgs.registry:write",
+      "settings:read",
+      "settings:write",
+      "settings.lists:write"
+    ],
+    "grantedOnApproval": true
+  },
+  {
+    "code": "PLATFORM_SUPPORT",
+    "label": "Platform support",
+    "description": "Reads the registry to answer questions from operators and assessors, and changes nothing.",
+    "orgTypes": ["PLATFORM"],
+    "capabilities": ["orgs.registry:read"],
+    "grantedOnApproval": false
+  },
+  {
+    "code": "GOVERNING_BODY_ADMIN",
+    "label": "Governing body administrator",
+    "description": "Administers the standard on behalf of the governing body, including approving new operators.",
+    "orgTypes": ["GOVERNING_BODY"],
+    "capabilities": [
+      "orgs:read",
+      "orgs:write",
+      "orgs.members:read",
+      "orgs.members:write",
+      "orgs.registry:read",
+      "orgs.registry:write",
+      "settings:read",
+      "settings:write",
+      "settings.lists:write"
+    ],
+    "grantedOnApproval": true
+  },
+  {
+    "code": "ACO_ADMIN",
+    "label": "Operator administrator",
+    "description": "Runs a cargo terminal account: invites colleagues, maintains settings and submits the cycle.",
+    "orgTypes": ["ACO"],
+    "capabilities": [
+      "orgs:read",
+      "orgs:write",
+      "orgs.members:read",
+      "orgs.members:write",
+      "settings:read",
+      "settings:write",
+      "settings.lists:write"
+    ],
+    "grantedOnApproval": true
+  },
+  {
+    "code": "ACO_ASSESSOR",
+    "label": "Operator assessor",
+    "description": "Answers the self assessment for the terminal. Held alongside the administrator role by a SPOC.",
+    "orgTypes": ["ACO"],
+    "capabilities": ["orgs:read"],
+    "grantedOnApproval": false
+  },
+  {
+    "code": "ACO_VIEWER",
+    "label": "Operator viewer",
+    "description": "Reads the terminal scores and settings without changing anything.",
+    "orgTypes": ["ACO"],
+    "capabilities": ["orgs:read", "settings:read"],
+    "grantedOnApproval": false
+  },
+  {
+    "code": "ASSESSOR_FIRM_ADMIN",
+    "label": "Assessor firm administrator",
+    "description": "Runs an independent assessor firm account and assigns its assessors to terminals.",
+    "orgTypes": ["ASSESSOR_FIRM"],
+    "capabilities": [
+      "orgs:read",
+      "orgs:write",
+      "orgs.members:read",
+      "orgs.members:write",
+      "settings:read",
+      "settings:write"
+    ],
+    "grantedOnApproval": true
+  },
+  {
+    "code": "EXTERNAL_ASSESSOR",
+    "label": "External assessor",
+    "description": "Carries out the independent assessment of a terminal on behalf of an assessor firm.",
+    "orgTypes": ["ASSESSOR_FIRM"],
+    "capabilities": ["orgs:read"],
+    "grantedOnApproval": false
+  },
+  {
+    "code": "AIRPORT_ADMIN",
+    "label": "Airport administrator",
+    "description": "Runs an airport account and maintains the terminals recorded against it.",
+    "orgTypes": ["AIRPORT"],
+    "capabilities": ["orgs:read", "orgs:write", "orgs.members:read", "orgs.members:write"],
+    "grantedOnApproval": true
+  },
+  {
+    "code": "AIRPORT_VIEWER",
+    "label": "Airport viewer",
+    "description": "Reads the published performance of the terminals at one airport.",
+    "orgTypes": ["AIRPORT"],
+    "capabilities": ["orgs:read"],
+    "grantedOnApproval": false
+  }
+]

@@ -13,7 +13,8 @@ packages/contracts   zod schemas, inferred types, the error-code union, ScoreEnv
                      The single wire truth, consumed unchanged by the frontend.
 packages/core        pure and IO-free: the scoring pipeline, sampling rules and
                      cycle predicates. No database, no clock, no network.
-apps/api             Express API (next)
+apps/api             Express API: the kernel (config, auth, tenancy, route policy)
+                     plus feature modules. See apps/api/README.md
 apps/worker          task runner, outbox drainer, provisioning, scoring (next)
 ```
 
