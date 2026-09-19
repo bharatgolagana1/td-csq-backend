@@ -57,28 +57,13 @@ export const UserModel: Model<UserDoc> =
   (models['User'] as Model<UserDoc> | undefined) ?? model<UserDoc>('User', UserSchema);
 export type UserDocument = HydratedDocument<UserDoc>;
 
-export interface OrganisationDoc {
-  _id: string;
-  name: string;
-  /** ACO is an air cargo operator, the terminal being assessed. */
-  kind: 'ACO' | 'AUDITOR' | 'ACFI' | 'CUSTOMER';
-  status: 'ACTIVE' | 'SUSPENDED';
-}
+/**
+ * The organisation registry lives in the orgs module, not here.
+ *
+ * An earlier kernel draft declared its own `Organisation` model alongside the
+ * module's `Organization`. Different spellings meant they never collided at
+ * registration, which made it worse rather than safer: the same concept would
+ * have accumulated in two collections with no error to notice. The kernel needs
+ * only the users collection to resolve a principal.
+ */
 
-const OrganisationSchema = new Schema<OrganisationDoc>(
-  {
-    _id: { type: String, default: newId },
-    name: { type: String, required: true },
-    kind: { type: String, enum: ['ACO', 'AUDITOR', 'ACFI', 'CUSTOMER'], required: true },
-    status: { type: String, enum: ['ACTIVE', 'SUSPENDED'], default: 'ACTIVE' },
-  },
-  { timestamps: true },
-);
-
-/** The tenancy root. Every tenant-scoped document points at one of these. */
-export const OrganisationModel: Model<OrganisationDoc> =
-  (models['Organisation'] as Model<OrganisationDoc> | undefined) ??
-  model<OrganisationDoc>(
-    'Organisation',
-  OrganisationSchema,
-);
