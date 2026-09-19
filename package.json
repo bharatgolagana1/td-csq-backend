@@ -1,26 +1,19 @@
 {
-  "name": "td-csq-backend",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "csq",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "engines": { "node": ">=20.11" },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node app.js --trace-warnings"
-
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "eslint .",
+    "depcruise": "depcruise --config .dependency-cruiser.cjs packages apps"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "@keycloak/keycloak-admin-client": "^25.0.2",
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "express-session": "^1.18.0",
-    "jsonwebtoken": "^9.0.2",
-    "keycloak-connect": "^25.0.2",
-    "mongoose": "^8.4.1",
-    "mongoose-sequence": "^6.0.1"
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "dependency-cruiser": "^16.3.10",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
   }
 }
