@@ -6,11 +6,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "postbuild": "node scripts/copy-module-data.mjs",
-    "dev": "tsx watch src/main.ts",
-    "start": "node dist/main.js",
+    "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
+    "start": "node --env-file-if-exists=.env dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "seed": "tsx src/modules/refdata/seed/seed.ts"
+    "seed": "tsx --env-file-if-exists=.env src/modules/refdata/seed/seed.ts",
+    "seed:platform": "tsx --env-file-if-exists=.env src/modules/orgs/orgs.seed.ts"
   },
   "dependencies": {
     "@csq/contracts": "workspace:*",

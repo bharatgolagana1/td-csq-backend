@@ -1,0 +1,66 @@
+{
+  "realm": "csq",
+  "displayName": "CSQ · Cargo Service Quality",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 3600,
+  "ssoSessionMaxLifespan": 36000,
+  "defaultSignatureAlgorithm": "RS256",
+  "clients": [
+    {
+      "clientId": "csq-frontend",
+      "name": "CSQ web application",
+      "description": "Public SPA client. PKCE only; no secret. Tokens carry aud=csq-api through the audience mapper below.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "rootUrl": "http://localhost:5173",
+      "baseUrl": "/",
+      "redirectUris": ["http://localhost:5173/*", "http://127.0.0.1:5173/*", "https://app.dev.csq.aero/*"],
+      "webOrigins": ["http://localhost:5173", "http://127.0.0.1:5173", "https://app.dev.csq.aero"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*##https://app.dev.csq.aero/*"
+      },
+      "fullScopeAllowed": true,
+      "defaultClientScopes": ["openid", "profile", "email", "web-origins", "roles"],
+      "protocolMappers": [
+        {
+          "name": "csq-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "csq-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "csq-api",
+      "name": "CSQ API",
+      "description": "Bearer-only resource. The API verifies tokens against this realm's JWKS with aud=csq-api; it never logs anyone in.",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocol": "openid-connect"
+    }
+  ],
+  "users": []
+}
