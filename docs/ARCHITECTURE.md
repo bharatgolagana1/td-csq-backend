@@ -93,6 +93,17 @@ and why):
   slot; `audit_log` carries `actorOrgId` next to `orgId` (the organisation
   the entry concerns) so tenancy filters can use `orgId`; `settings` carries
   `revealAssessorIdentity` (used by §6 assessments).
+- `scores.refId` and `airport_scores.refId` (§5) are the node's stable CODE
+  (question / subcategory / category code, or `OVERALL`), not its survey
+  version id: a new survey version creates new ids but keeps codes, so the
+  previous-cycle comparison (§7) still lines up row by row across versions.
+  `scores` also carries `airportId`, `surveyId` (the pinned version), `order`
+  (tree pre-order), `provisional` and `computedAt`, and its OVERALL row the
+  feedback `distribution` and response `counts`; `airport_scores` carries
+  `order`, `provisional` and `computedAt`. `POST /scoring/cycles/:cycleId/run`
+  (§6) keeps `cycles.operate` as its guard, but because the registry only lets
+  a module name its own tasks the route's policy is `session` and the service
+  asserts the task (403) and the PLATFORM scope.
 
 Modules (in dependency order): `identity` (users, roles, tasks, matrix,
 memberships, me), `airports`, `organisations` (ACFI, ACO, airport orgs; market
@@ -155,11 +166,13 @@ database authorises.
   settings.view settings.manage`.
 - `role_tasks` `{ roleId, taskId, enabled }` — the Role → Task matrix. Seeded
   defaults: SUPER_ADMIN everything; ACFI_ANALYST all `*.view` + reports +
-  monitoring; ACO_ADMIN customers/sampling (incl. lock)/assessments.self/
-  assessments.view/reports.operator/users.view/users.manage (own org)/
-  settings.view; ACO_USER customers.view, sampling.view, assessments.self,
-  reports.operator; AIRPORT_ADMIN/VIEWER reports.airport (+ users.manage for
-  admin). Saving the matrix bumps `settings.rbacVersion`; the RBAC cache keys
+  monitoring; ACO_ADMIN cycles.view/customers/sampling (incl. lock)/
+  assessments.self/assessments.view/reports.operator/users.view/users.manage
+  (own org)/settings.view; ACO_USER cycles.view, customers.view,
+  sampling.view, assessments.self, reports.operator; AIRPORT_ADMIN/VIEWER
+  cycles.view, reports.airport (+ users.view/users.manage for admin). Every
+  operator and airport role holds `cycles.view` because the cycle strip,
+  sampling and dashboard all start from `GET /cycles/current`. Saving the matrix bumps `settings.rbacVersion`; the RBAC cache keys
   on it.
 - `memberships` `{ userId, orgId, roleId, status: ACTIVE|INACTIVE }`. A user
   may belong to several organisations. The active organisation is the header

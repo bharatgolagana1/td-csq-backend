@@ -8,15 +8,24 @@ import { buildRouter, describePolicy, type RouteDeps } from '../core/http.js';
 import type { ModuleDefinition, TaskDefinition } from '../core/module.js';
 
 import airports from './airports/index.js';
+import assessments from './assessments/index.js';
 import audit from './audit/index.js';
+import customers from './customers/index.js';
+import cycles from './cycles/index.js';
 import health from './health/index.js';
 import identity from './identity/index.js';
 import { upsertTasks } from './identity/matrix.service.js';
+import invitations from './invitations/index.js';
 import notifications from './notifications/index.js';
+import onboarding from './onboarding/index.js';
 import organisations from './organisations/index.js';
+import reports from './reports/index.js';
+import sampling from './sampling/index.js';
+import scoring from './scoring/index.js';
 import settings from './settings/index.js';
+import surveys from './surveys/index.js';
 
-export const modules: readonly ModuleDefinition[] = [identity, airports, organisations, settings, audit, notifications, health];
+export const modules: readonly ModuleDefinition[] = [identity, airports, organisations, settings, audit, notifications, surveys, cycles, customers, sampling, invitations, assessments, scoring, reports, onboarding, health];
 
 const TASK_CODE = /^[a-z][a-z0-9]*\.[a-z][a-z0-9]*$/;
 const POLICY_KINDS = new Set(['public', 'session', 'link', 'task']);

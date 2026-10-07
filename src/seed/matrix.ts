@@ -7,11 +7,15 @@
  *
  * AIRPORT_ADMIN receives `users.view` alongside `users.manage` (the doc lists
  * only users.manage; managing users without listing them is not usable).
+ * Every operator and airport role receives `cycles.view`: the cycle strip,
+ * the sampling page and the dashboard all start from GET /cycles/current,
+ * and a role that cannot see which cycle it is in cannot act in it.
  */
 export const DEFAULT_MATRIX: Readonly<Record<string, readonly string[]>> = {
   SUPER_ADMIN: ['*'],
   ACFI_ANALYST: ['*.view', 'reports.*', 'monitoring.view'],
   ACO_ADMIN: [
+    'cycles.view',
     'customers.*',
     'sampling.view',
     'sampling.manage',
@@ -23,9 +27,9 @@ export const DEFAULT_MATRIX: Readonly<Record<string, readonly string[]>> = {
     'users.manage',
     'settings.view',
   ],
-  ACO_USER: ['customers.view', 'sampling.view', 'assessments.self', 'reports.operator'],
-  AIRPORT_ADMIN: ['reports.airport', 'users.view', 'users.manage'],
-  AIRPORT_VIEWER: ['reports.airport'],
+  ACO_USER: ['cycles.view', 'customers.view', 'sampling.view', 'assessments.self', 'reports.operator'],
+  AIRPORT_ADMIN: ['cycles.view', 'reports.airport', 'users.view', 'users.manage'],
+  AIRPORT_VIEWER: ['cycles.view', 'reports.airport'],
 };
 
 export function matchesPattern(code: string, pattern: string): boolean {

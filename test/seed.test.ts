@@ -10,7 +10,7 @@ import { collectTasks } from '../src/modules/index.js';
 import { OrganisationModel } from '../src/modules/organisations/organisations.model.js';
 import { getRbacVersion } from '../src/modules/settings/settings.service.js';
 import { seedCore } from '../src/seed/core.js';
-import { matchesPattern, resolvePatterns } from '../src/seed/matrix.js';
+import { DEFAULT_MATRIX, matchesPattern, resolvePatterns } from '../src/seed/matrix.js';
 import { ensureSuperAdmin } from '../src/seed/super-admin.js';
 
 import { createTestApp, type TestApp } from './helpers/app.js';
@@ -35,13 +35,17 @@ describe('seedCore', () => {
     expect(await RoleModel.countDocuments({ system: true })).toBe(6);
     expect(await OrganisationModel.countDocuments({ code: 'ACFI', type: 'ACFI', status: 'ACTIVE' })).toBe(1);
 
-    expect(await tasksOf('SUPER_ADMIN')).toEqual(declared.map((task) => task.code).sort());
-    expect(await tasksOf('ACO_USER')).toEqual([]);
-    expect(await tasksOf('ACO_ADMIN')).toEqual(['settings.view', 'users.manage', 'users.view']);
-    expect(await tasksOf('ACFI_ANALYST')).toEqual(
-      declared.map((task) => task.code).filter((code) => code.endsWith('.view')).sort(),
-    );
-    expect(await tasksOf('AIRPORT_ADMIN')).toEqual(['users.manage', 'users.view']);
+    // Each role's default grant is its matrix patterns resolved against the
+    // declared tasks, so the expectation grows with the modules instead of
+    // pinning the task list of an earlier build.
+    const codes = declared.map((task) => task.code);
+    const expectedFor = (role: string): string[] => resolvePatterns(DEFAULT_MATRIX[role] ?? [], codes).sort();
+    expect(await tasksOf('SUPER_ADMIN')).toEqual(codes.slice().sort());
+    for (const role of ['ACO_USER', 'ACO_ADMIN', 'ACFI_ANALYST', 'AIRPORT_ADMIN', 'AIRPORT_VIEWER']) {
+      expect(await tasksOf(role), role).toEqual(expectedFor(role));
+    }
+    expect(expectedFor('ACO_ADMIN')).toContain('sampling.lock');
+    expect(expectedFor('ACO_USER')).not.toContain('sampling.lock');
   });
 
   it('is idempotent and preserves administrators\' edits', async () => {

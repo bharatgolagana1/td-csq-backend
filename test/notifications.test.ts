@@ -23,7 +23,10 @@ afterAll(() => t.close());
 
 describe('templates', () => {
   it('render subject, text and escaped HTML for every template', () => {
-    expect(TEMPLATE_NAMES.sort()).toEqual(['account-invited', 'generic', 'registration-approved', 'registration-received']);
+    // Modules register their own templates, so the registry holds at least the
+    // foundation's four; exact membership is each module's own test's business.
+    expect(TEMPLATE_NAMES).toEqual(expect.arrayContaining(['account-invited', 'generic', 'registration-approved', 'registration-received']));
+    expect(new Set(TEMPLATE_NAMES).size).toBe(TEMPLATE_NAMES.length);
     const common = { brandName: 'ACFI', webUrl: 'https://csq.test' };
     const invited = renderTemplate('account-invited', { name: 'A <b>', orgName: 'Org & Co', roleName: 'Role', invitedBy: 'Admin' }, common);
     expect(invited.subject).toBe('You have been invited to ACFI CSQ');

@@ -5,6 +5,7 @@ import { initLogger } from '../core/logger.js';
 
 import { seedCore } from './core.js';
 import { describeSuperAdmin, ensureSuperAdmin } from './super-admin.js';
+import { describeSeededSurvey, seedSurveys } from './surveys.js';
 
 interface Args {
   superAdmin: { email: string; name: string } | null;
@@ -41,6 +42,8 @@ try {
   if (result.airports) {
     console.log(`Airports: ${result.airports.rows} in the vendored list, ${result.airports.inserted} inserted.`);
   }
+  const surveys = await seedSurveys();
+  console.log(`Surveys: ${describeSeededSurvey('DOMESTIC', surveys.DOMESTIC)}; ${describeSeededSurvey('INTERNATIONAL', surveys.INTERNATIONAL)}.`);
   if (args.superAdmin) {
     const { user, created } = await ensureSuperAdmin(args.superAdmin);
     console.log(`${created ? 'Created' : 'Kept'} super admin ${describeSuperAdmin(user)}.`);

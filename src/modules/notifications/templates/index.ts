@@ -1,7 +1,17 @@
 import { accountInvited } from './account-invited.js';
+import { assessmentInvitation } from './assessment-invitation.js';
+import { assessmentOtp } from './assessment-otp.js';
+import { assessmentReminder } from './assessment-reminder.js';
+import { assessmentThankYou } from './assessment-thank-you.js';
+import { cyclePublished } from './cycle-published.js';
 import { generic } from './generic.js';
 import { registrationApproved } from './registration-approved.js';
 import { registrationReceived } from './registration-received.js';
+import { registrationRejected } from './registration-rejected.js';
+import { sampleLocked } from './sample-locked.js';
+import { sampleUnlocked } from './sample-unlocked.js';
+import { samplingClosed } from './sampling-closed.js';
+import { samplingReminder } from './sampling-reminder.js';
 import type { RenderedMail, Template, TemplateCommon } from './types.js';
 
 /**
@@ -13,6 +23,16 @@ export const templates = {
   'account-invited': accountInvited,
   'registration-received': registrationReceived,
   'registration-approved': registrationApproved,
+  'registration-rejected': registrationRejected,
+  'sample-locked': sampleLocked,
+  'sample-unlocked': sampleUnlocked,
+  'cycle-published': cyclePublished,
+  'sampling-reminder': samplingReminder,
+  'sampling-closed': samplingClosed,
+  'assessment-invitation': assessmentInvitation,
+  'assessment-otp': assessmentOtp,
+  'assessment-reminder': assessmentReminder,
+  'assessment-thank-you': assessmentThankYou,
   generic,
 } satisfies Record<string, Template<never>>;
 

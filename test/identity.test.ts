@@ -3,7 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { idString } from '../src/core/ids.js';
 import { AuditModel } from '../src/modules/audit/audit.model.js';
 import { MembershipModel } from '../src/modules/identity/memberships.model.js';
+import { collectTasks } from '../src/modules/index.js';
 import { NotificationModel } from '../src/modules/notifications/notifications.model.js';
+import { DEFAULT_MATRIX, resolvePatterns } from '../src/seed/matrix.js';
 
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { createTestOperator, expectError } from './helpers/fixtures.js';
@@ -138,7 +140,12 @@ describe('roles', () => {
     expect(roles).toHaveLength(6);
     expect(roles.every((role) => role.system)).toBe(true);
     expect(roles.find((role) => role.code === 'SUPER_ADMIN')!.taskCount).toBeGreaterThan(10);
-    expect(roles.find((role) => role.code === 'AIRPORT_VIEWER')!.taskCount).toBe(0);
+    // The default grant for a role is whatever its matrix patterns resolve to
+    // against the tasks the mounted modules declare, so the count follows the
+    // registry rather than a number pinned when fewer modules existed.
+    const declared = collectTasks().map((task) => task.code);
+    const viewerTasks = resolvePatterns(DEFAULT_MATRIX['AIRPORT_VIEWER'] ?? [], declared);
+    expect(roles.find((role) => role.code === 'AIRPORT_VIEWER')!.taskCount).toBe(viewerTasks.length);
   });
 
   it('creates and renames a custom role; code and scope are immutable; duplicates 409', async () => {

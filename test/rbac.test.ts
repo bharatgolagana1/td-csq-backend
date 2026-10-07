@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { idString } from '../src/core/ids.js';
 import { getRbacVersion } from '../src/modules/settings/settings.service.js';
+import { DEFAULT_MATRIX, resolvePatterns } from '../src/seed/matrix.js';
 
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { expectError } from './helpers/fixtures.js';
@@ -53,7 +54,8 @@ describe('PUT /roles/matrix', () => {
     const sa = roles.find((role) => role.code === 'SUPER_ADMIN')!;
     expect(sa.tasks.length).toBe(tasks.length);
     expect(sa.system).toBe(true);
-    expect(roles.find((role) => role.code === 'ACO_USER')?.tasks).toEqual(['assessments.self', 'customers.view', 'reports.operator', 'sampling.view'].filter((c) => tasks.some((task) => task.code === c)));
+    const expectedAcoUser = resolvePatterns(DEFAULT_MATRIX['ACO_USER'] ?? [], tasks.map((task) => task.code)).sort();
+    expect([...(roles.find((role) => role.code === 'ACO_USER')?.tasks ?? [])].sort()).toEqual(expectedAcoUser);
   });
 
   it('saves the whole matrix, bumps rbacVersion and takes effect on the next request', async () => {
