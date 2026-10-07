@@ -52,25 +52,47 @@ src/
     auth/session.ts    resolves user + memberships → `req.ctx` (see §4)
     auth/rbac.ts       `requireTask('cycles.manage')`, `requireScope('PLATFORM'|'ACO'|'AIRPORT')`
     auth/link.ts       participant / registration link sessions (HS256 JWT) → `req.link`
-    audit.ts           `audit(ctx, { action, entity, entityId, before, after })`
-    mailer.ts          transport (SMTP or LOG), `send(template, to, vars)` → notifications log
-    templates/         e-mail templates (subject + text + minimal HTML), one file each
     scheduler.ts       node-cron every minute → `jobs/*` runners, idempotent through `jobs`
-    pagination.ts      `?page=1&pageSize=25&sort=-createdAt&q=` helpers, `{ data, meta }`
+    jobs.model.ts      the `jobs` collection (scheduler idempotency record)
+    pagination.ts      `?page=1&pageSize=25&sort=-createdAt&q=` helpers, `Page` → `{ data, meta }`
+    filters.ts         `and()` — combine a scope filter with request filters without key overwrites
     ids.ts             ObjectId ↔ string, `toId()` validation
+    module.ts          `ModuleDefinition` / `TaskDefinition` types, `defineModule()`
+    request-id.ts      `x-request-id` middleware + accessor
+    version.ts         name/version from package.json for /health
   modules/<name>/
     <name>.model.ts    mongoose schema + indexes
     <name>.schemas.ts  zod request/response schemas (exported for OpenAPI)
     <name>.service.ts  business logic; takes `ctx`, never reads req/res
-    <name>.routes.ts   express Router built with `route()`; policy on every route
-    index.ts           `{ router, basePath, tasks: TaskDefinition[] }`
-  modules/index.ts     registers modules; boot fails if a route has no policy or
-                       names a task its module did not declare
+    <name>.routes.ts   `route()` definitions; policy on every route
+    index.ts           `{ name, basePath, tasks: TaskDefinition[], routes }`
+  modules/index.ts     registers modules and builds their routers; boot fails if a
+                       route has no policy or names a task its module did not declare
+  modules/audit/       `audit(ctx, { action, entity, entityId, before, after })` + GET /audit
+  modules/notifications/
+                       transport (SMTP or LOG), `send({ template, to, vars, refs })` →
+                       notifications log; `templates/` one file each (subject + text + HTML)
   jobs/                cycle transitions, reminders, invitation expiry, scoring runs
   seed/                reference data (airports, surveys, roles, tasks, matrix), demo dataset
 test/                  vitest; `test/helpers` builds a signed-in context without Keycloak
 docs/
 ```
+
+Foundation notes (where the code differs from the first draft of this file,
+and why):
+
+- `audit`, the mailer and the e-mail templates live in `modules/audit` and
+  `modules/notifications` rather than `core/`, because §1a makes them
+  features that own their model, routes and templates.
+- A module exports `routes` (plain `route()` definitions), not an Express
+  router: the registry builds the router, which is how it can verify every
+  policy and inject the token verifier / link-session secret.
+- Policies are `public`, `session` (any signed-in user — `GET /me`), `task`
+  and `link`.
+- `jobs.status` has a third value, `RUNNING`, used while `once()` claims a
+  slot; `audit_log` carries `actorOrgId` next to `orgId` (the organisation
+  the entry concerns) so tenancy filters can use `orgId`; `settings` carries
+  `revealAssessorIdentity` (used by §6 assessments).
 
 Modules (in dependency order): `identity` (users, roles, tasks, matrix,
 memberships, me), `airports`, `organisations` (ACFI, ACO, airport orgs; market
