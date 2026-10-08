@@ -29,13 +29,13 @@ p, h1, h2 { margin: 0; }
 }
 .csq-bg { position: absolute; inset: 0; z-index: -2; overflow: hidden; margin: 0; }
 .csq-bg img {
-  width: 100%; height: 100%; object-fit: cover; object-position: 72% 40%; display: block;
-  filter: saturate(.7) brightness(.9);
+  width: 100%; height: 100%; object-fit: cover; object-position: 28% 40%; display: block;
+  filter: saturate(.7) brightness(.9); transform: scaleX(-1);
 }
 .csq-veil {
   position: absolute; inset: 0; z-index: -1;
   background:
-    linear-gradient(90deg, rgba(6, 9, 10, .96) 0%, rgba(6, 9, 10, .88) 34%, rgba(6, 9, 10, .52) 62%, rgba(6, 9, 10, .35) 100%),
+    linear-gradient(270deg, rgba(6, 9, 10, .96) 0%, rgba(6, 9, 10, .88) 34%, rgba(6, 9, 10, .52) 62%, rgba(6, 9, 10, .35) 100%),
     linear-gradient(180deg, rgba(6, 9, 10, .55) 0%, rgba(6, 9, 10, 0) 30%, rgba(6, 9, 10, .25) 70%, rgba(6, 9, 10, .9) 100%);
 }
 
@@ -64,13 +64,13 @@ p, h1, h2 { margin: 0; }
 
 /* ---------- main ---------- */
 .csq-main {
-  display: grid; grid-template-columns: minmax(0, 460px) 1fr; align-items: end; gap: 48px;
+  display: grid; grid-template-columns: 1fr minmax(0, 460px); align-items: end; gap: 48px;
   padding-block: 24px 40px;
 }
 @media (min-width: 1100px) { .csq-main { align-items: center; } }
 
 .csq-card {
-  width: 100%; max-width: 460px; padding: 36px 36px 32px;
+  grid-column: 2; justify-self: end; width: 100%; max-width: 460px; padding: 36px 36px 32px;
   background: rgba(10, 14, 16, .78); border: 1px solid var(--line2);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 30px 80px rgba(0, 0, 0, .45);
@@ -214,7 +214,7 @@ select.csq-input { padding-right: 40px; }
 .csq-otp-input { accent-color: var(--r5); }
 
 /* ---------- aside, footer ---------- */
-.csq-aside { display: none; justify-self: end; max-width: 520px; text-align: right; text-shadow: 0 2px 24px rgba(0, 0, 0, .6); }
+.csq-aside { display: none; grid-column: 1; grid-row: 1; justify-self: start; max-width: 520px; text-align: left; text-shadow: 0 2px 24px rgba(0, 0, 0, .6); }
 @media (min-width: 1100px) { .csq-aside { display: block; } }
 .csq-aside-kicker {
   font-family: var(--fm); font-size: 11px; letter-spacing: .24em; text-transform: uppercase; color: var(--ink2); margin-bottom: 14px;
@@ -233,12 +233,12 @@ select.csq-input { padding-right: 40px; }
 /* ---------- narrow ---------- */
 @media (max-width: 900px) {
   .csq-main { grid-template-columns: 1fr; align-items: start; padding-block: 12px 32px; }
-  .csq-card { max-width: none; }
+  .csq-card { grid-column: 1; max-width: none; }
   .csq-veil {
     background:
       linear-gradient(180deg, rgba(6, 9, 10, .7) 0%, rgba(6, 9, 10, .9) 45%, rgba(6, 9, 10, .97) 100%);
   }
-  .csq-bg img { object-position: 60% 30%; }
+  .csq-bg img { object-position: 40% 30%; }
   .csq-header { height: 64px; }
   .csq-brand-name { display: none; }
   .csq-kicker { letter-spacing: .16em; }
