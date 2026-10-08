@@ -13,6 +13,7 @@ import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
 import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { once } from '../../core/scheduler.js';
+import { webAppUrl } from '../../core/web-url.js';
 import { audit } from '../audit/audit.service.js';
 import { deriveReminderSchedule, nextReminder } from '../cycles/domain/derive.js';
 import { send } from '../notifications/notifications.service.js';
@@ -75,8 +76,9 @@ export async function getByToken(token: string): Promise<InvitationDoc | null> {
   return InvitationModel.findOne({ $or: [{ tokenHash: hash }, { previousTokenHashes: hash }] }).lean<InvitationDoc>();
 }
 
+/** `${PUBLIC_WEB_URL}/assess/${token}`, whatever slashes PUBLIC_WEB_URL ends in. */
 export function invitationLink(token: string): string {
-  return `${invitationsConfig().webUrl.replace(/\/+$/, '')}/assess/${token}`;
+  return webAppUrl(invitationsConfig().webUrl, `/assess/${token}`);
 }
 
 // --- sample lock / unlock ------------------------------------------------------

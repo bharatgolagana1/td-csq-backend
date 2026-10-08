@@ -3,9 +3,10 @@
 # Publishes Mongo on 127.0.0.1:27017 (the host-run `npm run dev` / `npm test`
 # use mongodb://127.0.0.1:27017/csq?replicaSet=rs0, which works because the
 # replica-set member is advertised as 127.0.0.1), runs the API in development
-# mode and builds the web app against http://localhost:4000. The web container
-# is published on 5173 because that is the redirect URI the Keycloak client
-# already allows (http://localhost:5173/*).
+# mode and builds the web app against http://localhost:4000. The web image
+# always serves the app under /app/, so it is http://localhost:5173/app/; the
+# container is published on 5173 because that is the redirect URI the
+# Keycloak client already allows (http://localhost:5173/*).
 #
 # Mongo only (API on the host):
 #   docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d mongo
@@ -25,7 +26,7 @@ services:
       LOG_LEVEL: debug
       MONGO_URI: mongodb://mongo:27017/csq?directConnection=true
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
-      PUBLIC_WEB_URL: http://localhost:5173
+      PUBLIC_WEB_URL: http://localhost:5173/app
       LINK_SESSION_SECRET: dev-only-link-session-secret-of-at-least-32-chars
       DEMO_REVEAL_OTP: "true"
 

@@ -32,7 +32,7 @@ nothing else.
 export KC_URL=https://auth.tinydata.in
 export KC_ADMIN_USER=admin KC_ADMIN_PASSWORD='…'    # or KC_ADMIN_TOKEN=<bearer>
 node deploy/keycloak/provision.mjs --dry-run             # show what would change
-node deploy/keycloak/provision.mjs --web-origin https://app.dev.csq.aero
+node deploy/keycloak/provision.mjs --web-origin https://dev.csq.aero      # the app lives at https://dev.csq.aero/app/
 node deploy/keycloak/provision.mjs --users deploy/keycloak/users.json
 ```
 

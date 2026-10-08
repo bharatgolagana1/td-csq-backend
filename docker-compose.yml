@@ -1,16 +1,25 @@
 # One-box deployment of CSQ: Mongo (single-node replica set), the API and the
-# web app. Keycloak is hosted at https://auth.tinydata.in/ and is not part of
-# this stack. TLS and the public hostnames (api.dev.csq.aero,
-# app.dev.csq.aero) are the host's nginx, see deploy/nginx/csq.conf; the
-# containers only ever listen on 127.0.0.1.
+# web app, behind the host's nginx on the one hostname dev.csq.aero
+# (deploy/nginx/csq-single-host.conf):
+#
+#   /        landing container  127.0.0.1:8080   already on the box, not this stack
+#   /app/    web                127.0.0.1:8081   this file
+#   /api/    api                127.0.0.1:4000   this file
+#
+# Mongo is reachable only inside the compose network. Keycloak is hosted at
+# https://auth.tinydata.in/ and is not part of this stack. The containers
+# only ever listen on 127.0.0.1.
 #
 # Variables (shell or a `.env` next to this file):
 #   API_TAG, WEB_TAG       image tags; use the git short SHA of each repo so a
 #                          rollback is `API_TAG=<sha> docker compose up -d api`
 #   WEB_CONTEXT            path to the td-csq-frontend checkout (default ../td-csq-frontend)
-#   VITE_API_BASE_URL, VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM, VITE_KEYCLOAK_CLIENT_ID
+#   VITE_BASE_PATH, VITE_API_BASE_URL, VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM,
+#   VITE_KEYCLOAK_CLIENT_ID
 #                          baked into the web bundle at build time (Vite inlines
-#                          import.meta.env); rebuild the web image to change them
+#                          import.meta.env); rebuild the web image to change them.
+#                          The defaults are the single-host layout: the app under
+#                          /app/ calling the API at /api/v1 on the same origin.
 #
 # The API's environment is deploy/api.env (copy deploy/api.env.example;
 # every variable is explained there). deploy/README.md is the runbook.
@@ -23,13 +32,15 @@ services:
     command: ["--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo-data:/data/db
+    # No `ports`: only the api container (same compose network) reaches it.
     healthcheck:
       # A replica set is required, not optional: multi-document transactions
       # are what make the sampling batch commit atomically. rs.status()
       # throws on an uninitiated node, so initiate on first check. The member
       # is advertised as 127.0.0.1:27017 so a host-run `npm run dev` with
-      # ?replicaSet=rs0 works; the api container therefore connects with
-      # ?directConnection=true (no discovery) rather than ?replicaSet=rs0.
+      # ?replicaSet=rs0 works (deploy/compose.dev.yml publishes the port);
+      # the api container therefore connects with ?directConnection=true
+      # (no discovery) rather than ?replicaSet=rs0.
       test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '127.0.0.1:27017' }] }).ok }"]
       interval: 10s
       timeout: 5s
@@ -64,12 +75,15 @@ services:
       context: ${WEB_CONTEXT:-../td-csq-frontend}
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://api.dev.csq.aero/api/v1}
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/app/}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
         VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-https://auth.tinydata.in/}
         VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-csq}
         VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-csq-frontend}
     ports:
-      - "127.0.0.1:8080:8080"
+      # Host 8081 because 8080 is the landing container. The image listens
+      # on 8080 (nginx as a non-root user cannot bind 80).
+      - "127.0.0.1:8081:8080"
     restart: unless-stopped
     logging: *logging
 

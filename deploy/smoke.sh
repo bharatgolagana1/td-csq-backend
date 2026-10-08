@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
 # Smoke test for a CSQ deployment: API health, SPA index and fallback,
-# asset caching, security headers, CORS, and that the API refuses
-# unauthenticated calls. Prints one line per check; exits 1 when any fails.
+# asset caching, security headers, CORS, that the API refuses
+# unauthenticated calls, and (single host) that / is still the landing site.
+# Prints one line per check; exits 1 when any fails.
 #
-#   deploy/smoke.sh                                       # the dev box
-#   API_URL=http://127.0.0.1:4000 WEB_URL=http://127.0.0.1:8080 \
-#     CORS_ORIGIN=https://app.dev.csq.aero deploy/smoke.sh   # straight at the containers
+#   deploy/smoke.sh https://dev.csq.aero     # single host: API at /api/, app at /app/, landing at /
+#   deploy/smoke.sh                          # the same, against https://dev.csq.aero
+#
+#   API_URL=http://127.0.0.1:4000 WEB_URL=http://127.0.0.1:8081/app \
+#     CORS_ORIGIN=https://dev.csq.aero deploy/smoke.sh          # straight at the containers
+#   API_URL=https://api.dev.csq.aero WEB_URL=https://app.dev.csq.aero \
+#     deploy/smoke.sh                                             # two-hostname layout (csq.conf)
 #
 # Needs only bash and curl.
 set -uo pipefail
 
-API_URL="${API_URL:-https://api.dev.csq.aero}"
-WEB_URL="${WEB_URL:-https://app.dev.csq.aero}"
-# The browser origin that must be allowed by CORS_ORIGINS (defaults to WEB_URL).
-CORS_ORIGIN="${CORS_ORIGIN:-$WEB_URL}"
-TIMEOUT="${TIMEOUT:-15}"
-
+BASE_URL="${1:-https://dev.csq.aero}"
+BASE_URL="${BASE_URL%/}"
+API_URL="${API_URL:-$BASE_URL}"
+WEB_URL="${WEB_URL:-$BASE_URL/app}"
 API_URL="${API_URL%/}"
 WEB_URL="${WEB_URL%/}"
+# scheme://host[:port] of the web app: the browser origin CORS_ORIGINS must
+# allow, and what the bundle's root-relative asset URLs resolve against.
+WEB_ORIGIN=$(printf '%s' "$WEB_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
+CORS_ORIGIN="${CORS_ORIGIN:-$WEB_ORIGIN}"
+TIMEOUT="${TIMEOUT:-15}"
 
 pass=0
 fail=0
@@ -51,7 +59,7 @@ header() {
 
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-printf 'API  %s\nWEB  %s\n\n' "$API_URL" "$WEB_URL"
+printf 'API  %s\nWEB  %s\nCORS %s\n\n' "$API_URL" "$WEB_URL" "$CORS_ORIGIN"
 
 # ---- API --------------------------------------------------------------------
 fetch GET "$API_URL/api/v1/health"
@@ -93,7 +101,7 @@ fi
 fetch GET "$WEB_URL/"
 index_body=$BODY
 if [ "$STATUS" = 200 ] && contains "$(header content-type)" 'text/html' && contains "$BODY" 'id="root"'; then
-  ok "SPA index served"
+  ok "SPA index served at $WEB_URL/"
 else
   bad "SPA index" "status $STATUS content-type '$(header content-type)'"
 fi
@@ -131,23 +139,43 @@ else
   bad "missing asset" "expected 404, got $STATUS"
 fi
 
-asset=$(printf '%s' "$index_body" | grep -o 'src="/assets/[^"]*\.js"' | head -n1 | sed 's/^src="//; s/"$//')
+# The bundle's script tag is root-relative (/app/assets/… under a base path,
+# /assets/… without one), so it resolves against the origin, not WEB_URL.
+asset=$(printf '%s' "$index_body" | grep -o 'src="/[^"]*assets/[^"]*\.js"' | head -n1 | sed 's/^src="//; s/"$//')
 if [ -n "$asset" ]; then
-  fetch GET "$WEB_URL$asset"
+  fetch GET "$WEB_ORIGIN$asset"
   if [ "$STATUS" = 200 ] && contains "$(header cache-control)" 'immutable' && contains "$(header content-type)" 'javascript'; then
     ok "bundle $asset is immutable"
   else
     bad "asset caching" "status $STATUS cache-control '$(header cache-control)' content-type '$(header content-type)'"
   fi
 else
-  bad "asset discovery" "no /assets/*.js reference found in index.html"
+  bad "asset discovery" "no /…/assets/*.js reference found in index.html"
 fi
 
 fetch GET "$WEB_URL/healthz"
 if [ "$STATUS" = 200 ]; then
-  ok "web /healthz"
+  ok "web $WEB_URL/healthz"
 else
-  bad "web /healthz" "status $STATUS"
+  bad "web healthz" "status $STATUS"
+fi
+
+# ---- single host only: the base path and the landing site ------------------
+if [ "$WEB_URL" != "$WEB_ORIGIN" ]; then
+  fetch GET "$WEB_URL"
+  location=$(header location)
+  if { [ "$STATUS" = 301 ] || [ "$STATUS" = 308 ]; } && contains "$location" "${WEB_URL#"$WEB_ORIGIN"}/"; then
+    ok "$WEB_URL redirects to $WEB_URL/"
+  else
+    bad "base path redirect" "expected 301 to ${WEB_URL#"$WEB_ORIGIN"}/, got $STATUS location '$location'"
+  fi
+
+  fetch GET "$WEB_ORIGIN/"
+  if [ "$STATUS" = 200 ] && contains "$(header content-type)" 'text/html' && ! contains "$BODY" 'id="root"'; then
+    ok "$WEB_ORIGIN/ is still the landing site"
+  else
+    bad "landing site" "status $STATUS content-type '$(header content-type)' (an id=\"root\" body means the app took over /)"
+  fi
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
