@@ -60,5 +60,24 @@ export default tseslint.config(
   {
     files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+    // Plain Node scripts (deploy/, scripts/): give them the Node globals so
+    // `process`, `fetch` and friends are not reported as undefined.
+    languageOptions: {
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        fetch: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        AbortController: 'readonly',
+        structuredClone: 'readonly',
+        crypto: 'readonly',
+        TextEncoder: 'readonly',
+      },
+    },
   },
 );

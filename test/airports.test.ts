@@ -6,7 +6,7 @@ import { PHASE_I_IATA } from '../src/modules/airports/airports.regions.js';
 import { seedAirports } from '../src/modules/airports/airports.service.js';
 
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
-import { expectError } from './helpers/fixtures.js';
+import { createTestOperator, expectError } from './helpers/fixtures.js';
 
 let t: TestApp;
 let superAdmin: TestUser;
@@ -58,6 +58,25 @@ describe('GET /airports', () => {
     expect(res.body.data).toMatchObject({ iata: 'DEL', icao: 'VIDP', city: 'New Delhi', region: 'North', active: true, operators: [] });
     expectError(await analyst.get('/api/v1/airports/0123456789abcdef01234567'), 404, 'NOT_FOUND');
     expectError(await analyst.get('/api/v1/airports/DEL'), 400, 'VALIDATION');
+  });
+
+  it('carries operatorCount: the ACTIVE operators at each airport, on the list rows and on one airport', async () => {
+    await createTestOperator({ code: 'APT-A', airportIata: 'DEL' });
+    await createTestOperator({ code: 'APT-B', airportIata: 'DEL' });
+    await createTestOperator({ code: 'APT-C', airportIata: 'DEL', status: 'INACTIVE' });
+    await createTestOperator({ code: 'APT-D', airportIata: 'BOM' });
+
+    const list = await analyst.get('/api/v1/airports?active=true&pageSize=50');
+    expect(list.status).toBe(200);
+    const counts = Object.fromEntries((list.body.data as { iata: string; operatorCount: number }[]).map((a) => [a.iata, a.operatorCount]));
+    expect(counts).toMatchObject({ DEL: 2, BOM: 1, HYD: 0 });
+    expect(Object.values(counts).every((count) => Number.isInteger(count))).toBe(true);
+
+    const del = await AirportModel.findOne({ iata: 'DEL' }).lean();
+    const one = await analyst.get(`/api/v1/airports/${del!._id.toHexString()}`);
+    expect(one.status).toBe(200);
+    expect(one.body.data.operatorCount).toBe(2);
+    expect((one.body.data.operators as { code: string }[]).map((o) => o.code)).toEqual(expect.arrayContaining(['APT-A', 'APT-B']));
   });
 });
 

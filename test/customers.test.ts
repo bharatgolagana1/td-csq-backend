@@ -1,5 +1,7 @@
+import type { Types } from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { withTransaction } from '../src/core/db.js';
 import { AppError } from '../src/core/errors.js';
 import { idString } from '../src/core/ids.js';
 import { AuditModel } from '../src/modules/audit/audit.model.js';
@@ -14,6 +16,10 @@ import {
   markLastSampled,
 } from '../src/modules/customers/customers.service.js';
 import { CUSTOMER_CSV_HEADERS, customerCsvTemplate } from '../src/modules/customers/domain/csvTemplate.js';
+import { CycleModel } from '../src/modules/cycles/cycles.model.js';
+import type { CycleStatus } from '../src/modules/cycles/domain/types.js';
+import { createParticipants, planParticipants } from '../src/modules/cycles/participants.service.js';
+import type { OrganisationDoc } from '../src/modules/organisations/organisations.model.js';
 
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { airportIdByIata, expectError, grantTasks } from './helpers/fixtures.js';
@@ -374,5 +380,94 @@ describe('exported service functions', () => {
     expect((await adminA.get(`${CUSTOMERS}/${idString(mine!._id)}`)).body.data.lastSampledCycleId).toBe(cycleId);
     expect((await CustomerModel.findById(theirs!._id).lean())!.lastSampledCycleId).toBeNull();
     expect(await markLastSampled(acoA, [], cycleId)).toBe(0);
+  });
+});
+
+describe('GET /customers/eligible', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const edge = (at: Date) => ({ wall: at.toISOString().slice(0, 16), utc: at });
+  let cycleId: string;
+  let draftId: string;
+
+  /** A BOTH cycle straight in the database with its participants created by the real cycles rules. */
+  async function createCycle(code: string, status: CycleStatus, operators: OrganisationDoc[]): Promise<string> {
+    const start = new Date(Date.now() - DAY);
+    const end = new Date(Date.now() + 10 * DAY);
+    const cycle = await CycleModel.create({
+      name: `Cycle ${code}`,
+      code,
+      type: 'BOTH',
+      tz: 'Asia/Kolkata',
+      sampling: { start: edge(start), end: edge(end) },
+      assessment: { start: edge(end), end: edge(new Date(end.getTime() + 30 * DAY)) },
+      minSampleSize: 2,
+      reminders: { sampling: { count: 3, everyDays: 3 }, assessment: { count: 10, everyDays: 2 } },
+      participatingAirportIds: [...new Set(operators.map((op) => idString(op.airportId as Types.ObjectId)))],
+      participatingAcoIds: operators.map((op) => op._id),
+      status,
+      publishedAt: status === 'DRAFT' ? null : new Date(),
+    });
+    await withTransaction(async (session) => {
+      await createParticipants(cycle._id, planParticipants({ type: 'BOTH', minSampleSize: 2 }, operators), session);
+    });
+    return idString(cycle._id);
+  }
+
+  beforeAll(async () => {
+    cycleId = await createCycle('CUST-BOTH', 'SAMPLING_OPEN', [adminA.org]);
+    draftId = await createCycle('CUST-DRAFT', 'DRAFT', [adminA.org]);
+  });
+
+  it('expands the operator directory for the cycle the way sampling does, paginated, with the sample key', async () => {
+    const page1 = await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&pageSize=2`);
+    expect(page1.status, JSON.stringify(page1.body)).toBe(200);
+    expect(page1.body.meta).toEqual({ page: 1, pageSize: 2, total: 5 });
+    const rows = page1.body.data as { customer: { id: string; name: string; status: string }; surveyType: string; key: string }[];
+    expect(rows.map((row) => `${row.customer.name}:${row.surveyType}`)).toEqual(['Acme Logistics:DOMESTIC', 'Bharat Brokers:DOMESTIC']);
+    expect(rows.every((row) => row.customer.status === 'ACTIVE' && row.key === `${row.customer.id}:${row.surveyType}`)).toBe(true);
+
+    const page3 = await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&pageSize=2&page=3`);
+    expect((page3.body.data as { customer: { name: string }; surveyType: string }[]).map((row) => `${row.customer.name}:${row.surveyType}`)).toEqual(['New Forwarder:INTERNATIONAL']);
+
+    // A BOTH customer in a BOTH cycle is two entries, one per survey type.
+    const all = await userA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&pageSize=50`);
+    expect(all.status).toBe(200);
+    expect((all.body.data as { customer: { name: string }; surveyType: string }[]).filter((row) => row.customer.name === 'Broker One').map((row) => row.surveyType)).toEqual([
+      'DOMESTIC',
+      'INTERNATIONAL',
+    ]);
+  });
+
+  it('narrows by surveyType, type and q', async () => {
+    const intl = await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&surveyType=INTERNATIONAL`);
+    expect((intl.body.data as { customer: { name: string } }[]).map((row) => row.customer.name)).toEqual(['Broker One', 'New Forwarder']);
+    expect(intl.body.meta.total).toBe(2);
+
+    const brokers = await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&q=broker`);
+    expect((brokers.body.data as { customer: { name: string }; surveyType: string }[]).map((row) => `${row.customer.name}:${row.surveyType}`)).toEqual([
+      'Bharat Brokers:DOMESTIC',
+      'Broker One:DOMESTIC',
+      'Broker One:INTERNATIONAL',
+    ]);
+
+    const cb = await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&type=CB`);
+    expect(cb.status).toBe(200);
+    expect((cb.body.data as { customer: { type: string } }[]).every((row) => row.customer.type === 'CB')).toBe(true);
+    expect(cb.body.meta.total).toBeLessThan(5);
+
+    expectError(await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&surveyType=COASTAL`), 400, 'VALIDATION');
+    expectError(await adminA.get(`${CUSTOMERS}/eligible`), 400, 'VALIDATION');
+  });
+
+  it('is 404 for a cycle the operator cannot see or is not in; PLATFORM names the operator', async () => {
+    expectError(await adminA.get(`${CUSTOMERS}/eligible?cycleId=${draftId}`), 404, 'NOT_FOUND');
+    expectError(await adminB.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}`), 404, 'NOT_FOUND');
+    expectError(await adminA.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&acoId=${acoB}`), 404, 'NOT_FOUND');
+
+    expectError(await superAdmin.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}`), 400, 'VALIDATION');
+    const named = await superAdmin.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&acoId=${acoA}`);
+    expect(named.status).toBe(200);
+    expect(named.body.meta.total).toBe(5);
+    expectError(await superAdmin.get(`${CUSTOMERS}/eligible?cycleId=${cycleId}&acoId=${acoB}`), 404, 'NOT_FOUND');
   });
 });

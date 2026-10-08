@@ -21,6 +21,7 @@ import type {
   CycleSummaryDto,
   ParticipantSamplingStatus,
   ParticipantSummaryDto,
+  UserRefDto,
 } from './sampling.schemas.js';
 
 type IdLike = string | Types.ObjectId;
@@ -71,7 +72,15 @@ function toCycleSummary(cycle: CycleLike): CycleSummaryDto {
   };
 }
 
-function toParticipantSummary(participant: ParticipantLike): ParticipantSummaryDto {
+/** `{ id, name }` of the user behind a lock / unlock, through identity; the id alone when the account is gone. */
+async function userRefOf(id: IdLike | null | undefined): Promise<UserRefDto | null> {
+  if (id === null || id === undefined) return null;
+  const user = await findUserById(id);
+  return { id: idString(id), name: user?.name ?? 'Unknown user' };
+}
+
+async function toParticipantSummary(participant: ParticipantLike): Promise<ParticipantSummaryDto> {
+  const [lockedByUser, unlockedByUser] = await Promise.all([userRefOf(participant.sampling.lockedBy), userRefOf(participant.sampling.unlockedBy)]);
   return {
     cycleId: idString(participant.cycleId),
     acoId: idString(participant.acoId),
@@ -83,8 +92,10 @@ function toParticipantSummary(participant: ParticipantLike): ParticipantSummaryD
       selectedCount: participant.sampling.selectedCount,
       lockedAt: iso(participant.sampling.lockedAt),
       lockedBy: idOrNull(participant.sampling.lockedBy),
+      lockedByUser,
       unlockedAt: iso(participant.sampling.unlockedAt),
       unlockedBy: idOrNull(participant.sampling.unlockedBy),
+      unlockedByUser,
       unlockReason: participant.sampling.unlockReason ?? null,
     },
   };

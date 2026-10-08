@@ -80,10 +80,10 @@ export async function participantStatus(token: string, now = new Date()): Promis
   const operator = await operatorFacts(invitation.acoId);
   return {
     state: effectiveState(invitation, now),
-    cycle: { id: cycle.id, name: cycle.name, assessmentEnd: cycle.assessment.end.toISOString() },
+    cycle: { id: cycle.id, name: cycle.name, tz: cycle.tz, assessmentEnd: cycle.assessment.end.toISOString() },
     operator: { name: operator.name, airport: operator.airport },
     surveyType: invitation.surveyType,
-    customer: { nameMasked: maskName(invitation.customer.name), emailMasked: maskEmail(invitation.email) },
+    customer: { nameMasked: maskName(invitation.customer.name), emailMasked: maskEmail(invitation.email), type: invitation.customer.type },
     submittedAt: invitation.submittedAt?.toISOString() ?? null,
     expiresAt: invitation.expiresAt.toISOString(),
   };

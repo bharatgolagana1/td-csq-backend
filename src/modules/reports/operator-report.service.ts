@@ -29,10 +29,12 @@ import type {
 } from './reports.schemas.js';
 import { selectOperatorCycle, type OperatorSelection } from './reports.selection.js';
 import {
+  countActiveAirports,
   loadAirport,
   loadCycle,
   loadNationalTable,
   loadScores,
+  loadSubmittedAssessmentCounts,
   loadSubmittedCustomerAssessments,
   loadSurveyTree,
   OVERALL_REF_ID,
@@ -108,10 +110,18 @@ function distributionOf(scores: ScoreSetView): OperatorReportDto['feedbackDistri
   return scores.distribution.length > 0 ? scores.distribution : feedbackDistribution([]);
 }
 
-async function nationalTableOf(cycleId: string, surveyType: SurveyType): Promise<NationalTableRowDto[]> {
+/** The scoring module's national table, best first, with the operator's own airport flagged. */
+async function nationalTableOf(cycleId: string, surveyType: SurveyType, ownAirportId: string | null): Promise<NationalTableRowDto[]> {
   const rows = await loadNationalTable(cycleId, surveyType);
   return rows
-    .map((row) => ({ airportIata: row.iata, airportName: row.name, rating: round2(row.mean), rank: row.rank }))
+    .map((row) => ({
+      airportIata: row.iata,
+      airportName: row.name,
+      rating: round2(row.mean),
+      rank: row.rank,
+      rankOf: row.rankOf,
+      isOwn: ownAirportId !== null && row.airportId === ownAirportId,
+    }))
     .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.airportIata.localeCompare(b.airportIata));
 }
 
@@ -145,10 +155,12 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
   const { cycle, participant, surveyType, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
-  const [airport, nationalTable, comparison] = await Promise.all([
+  const [airport, nationalTable, comparison, assessments, airportsTotal] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    nationalTableOf(cycle.id, surveyType),
+    nationalTableOf(cycle.id, surveyType, operator.airportId),
     comparisonOf(ctx, inputs, overall),
+    loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
+    countActiveAirports(),
   ]);
 
   return {
@@ -168,7 +180,9 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
     categories: categoriesOf(tree, rows),
     byStakeholder: byTypeOf(overall),
     assessorStats: assessorStatsOf(participant),
+    assessments,
     nationalTable,
+    airportsTotal,
   };
 }
 

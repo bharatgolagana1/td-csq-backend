@@ -34,8 +34,23 @@ Phase-I airports active). It never overwrites what an administrator changed:
 re-run it after adding a module so new tasks get their default grants.
 
 `--super-admin email=… name=…` creates (or keeps) the first `SUPER_ADMIN`
-user as INVITED. `npm run seed:demo` is a placeholder until the cycle modules
-exist.
+user as INVITED.
+
+`npm run seed:demo [-- --super-admin email=… name=…] [--reset]` builds the
+illustrative ACFI dataset on top of `npm run seed`: thirteen fictional
+operators at ten Phase-I airports with shares totalling 100 per airport,
+their admins, two extra ACO users and an ACFI analyst, FF/CB directories,
+two SCORED cycles (CSQ 2025 H2, CSQ 2026 H1: locked samples, 70–85 %
+submitted, self-assessments, one operator suppressed for too few
+responses), a live CSQ 2026 H2 in SAMPLING_OPEN (most operators
+mid-selection, two locked, one not started), one unused onboarding link and
+two SUBMITTED registrations. Everything goes through the modules' services
+with a deterministic PRNG; the only direct writes move timestamps the
+services stamp with the real clock back into each past cycle's window
+(`src/seed/demo/backdate.ts` lists them). Re-running keeps what exists;
+every document it made carries `demoKey` / `demo: true`, and `--reset`
+deletes exactly that set (the `--super-admin` account is never tagged).
+E-mails go to the notifications log only.
 
 ## First sign-in
 
@@ -112,7 +127,7 @@ All under `/api/v1`; policy in brackets.
 | GET, POST | `/roles` | roles.view, roles.manage |
 | PATCH | `/roles/:id` | roles.manage |
 | GET, PUT | `/roles/matrix` | roles.view, roles.manage |
-| GET, POST | `/airports` | airports.view, airports.manage |
+| GET, POST | `/airports` (rows carry `operatorCount`: ACTIVE operators at the airport) | airports.view, airports.manage |
 | POST | `/airports/import` (multipart `file` or `text/csv`) | airports.manage |
 | GET, PATCH | `/airports/:id` | airports.view, airports.manage |
 | GET, PUT | `/airports/:id/market-share` | marketshare.view, marketshare.manage |
@@ -189,6 +204,7 @@ a clash is `409 CONFLICT` with the holder's `customerId` in `details`.
 |---|---|---|
 | GET, POST | `/customers` (filters `type, surveyType, status, tag, acoId`; `q` over name, e-mail, contact) | customers.view, customers.manage |
 | GET, PATCH | `/customers/:id` · POST `/customers/:id/deactivate` · POST `/customers/:id/reactivate` | customers.view, customers.manage |
+| GET | `/customers/eligible?cycleId=` [list] (filters `surveyType, type`; `q`; PLATFORM `acoId`) → `[{ customer, surveyType, key }]`, the operator's eligible entries for the cycle expanded by the sampling rule and paginated; 404 unless the cycle is visible and the operator a participant | customers.view |
 | GET | `/customers/import/template` (CSV download, two example rows) | customers.view |
 | POST | `/customers/import/validate` (multipart `file` or `text/csv`; `?acoId=&fileName=`) → `customer_imports` VALIDATED | customers.manage |
 | POST | `/customers/import/:importId/commit` (transaction; 409 when already committed) | customers.manage |
@@ -218,7 +234,7 @@ with RESEND, EXPIRE and REVOKE edges).
 | GET | `/invitations` [list] (`?cycleId=&acoId=&state=&surveyType=&q=`) → masked rows | session + `cycles.view` |
 | POST | `/invitations/:id/resend` → new token, SENT, e-mail again; the old link dies (audit `invitation.resent`) | session + `notifications.send` |
 | POST | `/invitations/:id/revoke` → REVOKED, terminal (audit `invitation.revoked`) | session + `sampling.manage` |
-| GET | `/public/assess/:token` → `{ state, cycle { id, name, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked }, submittedAt, expiresAt }`; SENT → OPENED; `state` is EXPIRED once past `expiresAt`; unknown token 404 | public |
+| GET | `/public/assess/:token` → `{ state, cycle { id, name, tz, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked, type }, submittedAt, expiresAt }`; SENT → OPENED; `state` is EXPIRED once past `expiresAt`; unknown token 404 | public |
 | POST | `/public/assess/:token/otp` → `{ sent: true, expiresAt, devOtp? }` (`devOtp` only with `DEMO_REVEAL_OTP=true`); 429 `RATE_LIMITED` with `details { reason: COOLDOWN \| RATE_LIMITED \| ADDRESS, retryAfterMs }` | public |
 | POST | `/public/assess/:token/verify` `{ otp }` → `{ sessionToken, expiresAt, assessmentId }` (HS256, 12 h, claims `{ inv, asg, aco }`); 400 `OTP_INVALID` with `details { reason: NO_OTP \| EXPIRED \| LOCKED \| MISMATCH \| CONSUMED, attemptsLeft }` | public |
 | GET | `/public/assess/:token/form` → assessments' form (`{ assessment, survey, categories, progress }`) | link:participant |
@@ -333,7 +349,8 @@ an empty selection never locks). `samples` keeps one row per
 Selection state: `{ cycle { id, code, name, type, status, samplingStart,
 samplingEnd }, participant { cycleId, acoId, airportId, surveyTypes,
 requiredSampleSize, sampling { status, selectedCount, lockedAt, lockedBy,
-unlockedAt, unlockedBy, unlockReason } }, required, selectedCount,
+lockedByUser { id, name }, unlockedAt, unlockedBy, unlockedByUser { id, name },
+unlockReason } }, required, selectedCount,
 eligibleCount, lockable, reason, shortfallRule, remaining, target, progress
 ("37 / 50"), progressPct, editable, selection: [{ id, customerId, customer,
 surveyType, state, addedAt, addedBy }] }`. `lockable` is "pressing lock now
@@ -552,7 +569,7 @@ run, and a cross-tenant subject are all 404. Tasks: `reports.operator`,
 
 | Method | Path | Policy |
 |---|---|---|
-| GET | `/reports/operator/:acoId` (`?cycleId=&surveyType=`) → `{ cycle, surveyType, provisional, operator { id, code, name, airport }, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ id, code, name, customer, self, previous, delta, suppressed?, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, nationalTable: [{ airportIata, airportName, rating, rank }] }` | reports.operator |
+| GET | `/reports/operator/:acoId` (`?cycleId=&surveyType=`) → `{ cycle, surveyType, provisional, operator { id, code, name, airport }, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ id, code, name, customer, self, previous, delta, suppressed?, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, assessments { total, customer, self }, nationalTable: [{ airportIata, airportName, rating, rank, rankOf, isOwn }], airportsTotal }` | reports.operator |
 | GET | `/reports/operator/:acoId/questions` (`?cycleId=&surveyType=`) → `{ cycle, surveyType, provisional, operator, questions: [{ id, code, text, category, subcategory, customer { mean, n, naCount }, self, previous, delta, suppressed?, comments }] }` (active questions in survey order) | reports.operator |
 | GET | `/reports/airport/:airportId` (`?cycleId=&surveyType=`) → `{ cycle, surveyType, provisional, airport, overall { mean, coveredSharePct, marketShareApplied, rank, rankOf }, operators?: [{ acoId, code, name, mean, sharePct, suppressed }], categories: [{ id, code, name, mean, coveredSharePct, marketShareApplied }] }`; `operators` for PLATFORM and AIRPORT callers only | reports.airport |
 | GET | `/reports/national` (`?cycleId=&surveyType=`) → `{ cycle, surveyType, provisional, airports: [{ …airport, rating, rank, rankOf, coveredSharePct, marketShareApplied }], operators: [{ acoId, code, name, airport, rating, n, rank, rankOf, suppressed? }], categories: [{ id, code, name, mean, n }], participation { airports, operators, sampleLocked, invited, started, completed, pending, completionRate } }` | reports.national |

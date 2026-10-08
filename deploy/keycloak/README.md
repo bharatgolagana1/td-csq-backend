@@ -4,6 +4,12 @@ Identity only. Keycloak says *who* the caller is (`sub`, email, name); the
 CSQ database says what they may do, through the Role → Task matrix. No
 realm or client roles are used for authorisation.
 
+Keycloak is hosted at `https://auth.tinydata.in/` and is not part of the
+compose stack. The e-mail is the join key: a CSQ user (created by `npm run
+seed -- --super-admin …`, by `seed:demo`, or by an administrator in the app)
+is INVITED until a Keycloak account with the same e-mail signs in once; that
+first request stores the Keycloak `sub` and activates the account.
+
 ## Realm
 
 `realm/csq-realm.json` creates realm `csq` with two clients:
@@ -13,25 +19,77 @@ realm or client roles are used for authorisation.
 | `csq-frontend` | public, PKCE | the web app signs in with it; an audience mapper adds `aud=csq-api` to every access token |
 | `csq-api`      | bearer-only  | the audience the API checks (`KEYCLOAK_AUDIENCE=csq-api`)    |
 
-Local: `docker compose up keycloak` imports it on start (mounted at
-`/opt/keycloak/data/import`). Hosted (`https://auth.tinydata.in/`): Admin
-console → Create realm → Browse → this file, or the admin REST API
-`POST /admin/realms` with the file as the body. Add the real web origin and
-redirect URI of the deployed app to `csq-frontend` afterwards.
+No users are in the export: passwords never belong in git.
 
-## Users
+## provision.mjs
 
-No users are in the export: passwords never belong in git. Create the demo
-accounts in the console (Users → Add user, set email verified, Credentials →
-set password) or with the admin API, then link each one to a CSQ user:
+Node ≥ 22, no dependencies, idempotent. Creates the realm from the export
+when it is missing; when it exists, brings the two clients in line with the
+export (settings, redirect URIs, web origins, protocol mappers) and touches
+nothing else.
 
-- the first Super Admin: `pnpm --filter @csq/api seed:platform -- --platform-code ACFI … --admin-kc-user-id <Keycloak user id>`
-- everyone else: `POST /v1/orgs/users/:userId/identity` as a platform admin.
+```sh
+export KC_URL=https://auth.tinydata.in
+export KC_ADMIN_USER=admin KC_ADMIN_PASSWORD='…'    # or KC_ADMIN_TOKEN=<bearer>
+node deploy/keycloak/provision.mjs --dry-run             # show what would change
+node deploy/keycloak/provision.mjs --web-origin https://app.dev.csq.aero
+node deploy/keycloak/provision.mjs --users deploy/keycloak/users.json
+```
 
-The API's `.env` must point at the realm:
+| flag | effect |
+| --- | --- |
+| `--web-origin <origin>` | adds `<origin>` to the web origins and `<origin>/*` to the redirect and post-logout redirect URIs of `csq-frontend`; repeatable; existing entries are kept; when the realm is created the first origin is also the client's Root URL (never changed afterwards) |
+| `--users <file>` | creates the users in the file (below); existing users keep their password and only get names / flags updated; prints `created|kept <keycloak id> <email>` |
+| `--resend-emails` | with `--users`: send the UPDATE_PASSWORD e-mail again to existing users who still have not set a password (never sent twice otherwise) |
+| `--realm-file <path>` | another export (default `realm/csq-realm.json` next to the script) |
+| `--realm <name>` | realm name when it differs from the export |
+| `--dry-run` | reads only; every write is printed as `would …` |
+
+Admin credentials are the Keycloak master-realm admin (`KC_ADMIN_REALM` and
+`KC_ADMIN_CLIENT_ID` override `master` / `admin-cli`). The script never prints
+the token, a password, or a token-endpoint response.
+
+### users file
+
+`users.example.json` lists the demo accounts `npm run seed:demo` expects
+(`acfi.admin@example.in` is the demo super admin, the `*.example.in`
+addresses are the operator admins and ACFI analyst it creates) plus one
+real-address example. Copy it to `users.json` (git-ignored) and edit.
+
+```json
+{ "email": "…", "firstName": "…", "lastName": "…",
+  "temporaryPassword": "…"  |  "sendResetEmail": true }
+```
+
+- `temporaryPassword`: set at creation and must be changed at first sign-in.
+  Never re-applied to an existing user.
+- `sendResetEmail`: Keycloak sends an UPDATE_PASSWORD action e-mail (link
+  valid 7 days, lands on the first `--web-origin`). Requires SMTP in the
+  realm (Realm settings → Email in the console; credentials stay out of
+  git). Sent once, at creation; `--resend-emails` sends it again to users
+  who still have not set a password.
+- Neither: the account is created without a credential and an administrator
+  sets one in the console.
+
+Every account is created enabled with `emailVerified: true` and
+`username = email`. Fictional `example.in` addresses cannot receive e-mail,
+so the demo accounts use temporary passwords.
+
+## Console alternative
+
+Admin console → Create realm → Browse → `realm/csq-realm.json`, then add the
+deployed web origin and redirect URI to `csq-frontend`, and Users → Add user
+with the e-mail, email verified, Credentials → set password.
+
+## The API's side
 
 ```
 KEYCLOAK_ISSUER=https://auth.tinydata.in/realms/csq
 KEYCLOAK_JWKS_URI=https://auth.tinydata.in/realms/csq/protocol/openid-connect/certs
 KEYCLOAK_AUDIENCE=csq-api
 ```
+
+`KEYCLOAK_ADMIN_URL` / `KEYCLOAK_ADMIN_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_SECRET`
+are accepted by `src/config/env.ts` for the API's own user provisioning with
+a confidential service-account client (realm-management `manage-users`); until
+that is wired, `provision.mjs --users` is the way to create accounts.

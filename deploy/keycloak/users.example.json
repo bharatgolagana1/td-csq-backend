@@ -1,0 +1,32 @@
+[
+  {
+    "email": "acfi.admin@example.in",
+    "firstName": "ACFI",
+    "lastName": "Demo Admin",
+    "temporaryPassword": "ChangeMe-On-First-Login-1"
+  },
+  {
+    "email": "ananya.krishnan@example.in",
+    "firstName": "Ananya",
+    "lastName": "Krishnan",
+    "temporaryPassword": "ChangeMe-On-First-Login-2"
+  },
+  {
+    "email": "asha.rao@delcts.example.in",
+    "firstName": "Asha",
+    "lastName": "Rao",
+    "temporaryPassword": "ChangeMe-On-First-Login-3"
+  },
+  {
+    "email": "priya.nair@mumbaiaircargo.example.in",
+    "firstName": "Priya",
+    "lastName": "Nair",
+    "temporaryPassword": "ChangeMe-On-First-Login-4"
+  },
+  {
+    "email": "you@acfi.in",
+    "firstName": "Your",
+    "lastName": "Name",
+    "sendResetEmail": true
+  }
+]

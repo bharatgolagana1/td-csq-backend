@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
+import { SURVEY_TYPES } from '../cycles/domain/types.js';
 
 import { IMPORT_STATUSES } from './customer-imports.model.js';
 import { CUSTOMER_STATUSES, CUSTOMER_SURVEY_TYPES, CUSTOMER_TYPES } from './customers.model.js';
@@ -72,6 +73,25 @@ export type CustomerListQuery = z.infer<typeof customerListQuery>;
 
 /** `?acoId=` on the import routes: PLATFORM names the operator; ACO users may omit it. */
 export const acoScopeQuery = z.object({ acoId: idSchema.optional() });
+
+/** `GET /customers/eligible?cycleId=`: the sampling page's expanded entries, paginated server-side. */
+export const eligibleQuery = listQuerySchema.pick({ page: true, pageSize: true, q: true }).extend({
+  cycleId: idSchema,
+  /** PLATFORM only: the operator whose entries to expand. */
+  acoId: idSchema.optional(),
+  surveyType: z.enum(SURVEY_TYPES).optional(),
+  type: z.enum(CUSTOMER_TYPES).optional(),
+});
+export type EligibleQuery = z.infer<typeof eligibleQuery>;
+
+/** One sampleable (customer, surveyType) pair, as the sampling domain expands it. */
+export const eligibleEntryResponse = z.object({
+  customer: customerResponse,
+  surveyType: z.enum(SURVEY_TYPES),
+  /** `${customerId}:${surveyType}` — the identity of a sample within the participant. */
+  key: z.string(),
+});
+export type EligibleEntryDto = z.infer<typeof eligibleEntryResponse>;
 
 export const createCustomerBody = z
   .object({

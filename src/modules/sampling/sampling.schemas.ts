@@ -81,6 +81,10 @@ export const cycleSummary = z.object({
 });
 export type CycleSummaryDto = z.infer<typeof cycleSummary>;
 
+/** Who locked / unlocked, resolved through identity; `lockedBy` / `unlockedBy` keep the bare ids. */
+export const userRef = z.object({ id: z.string(), name: z.string() });
+export type UserRefDto = z.infer<typeof userRef>;
+
 export const participantSummary = z.object({
   cycleId: z.string(),
   acoId: z.string(),
@@ -92,8 +96,10 @@ export const participantSummary = z.object({
     selectedCount: z.number(),
     lockedAt: z.string().nullable(),
     lockedBy: z.string().nullable(),
+    lockedByUser: userRef.nullable(),
     unlockedAt: z.string().nullable(),
     unlockedBy: z.string().nullable(),
+    unlockedByUser: userRef.nullable(),
     unlockReason: z.string().nullable(),
   }),
 });

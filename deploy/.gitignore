@@ -1,0 +1,7 @@
+# filled-in environment and user lists carry secrets
+api.env
+*.env
+!api.env.example
+keycloak/users.json
+keycloak/users.*.json
+!keycloak/users.example.json

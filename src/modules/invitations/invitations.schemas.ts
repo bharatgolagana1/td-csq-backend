@@ -55,13 +55,15 @@ export const tokenParams = z.object({ token: z.string().min(1).max(200) });
 
 export const participantStatusResponse = z.object({
   state: z.enum(INVITATION_STATES),
-  cycle: z.object({ id: z.string(), name: z.string(), assessmentEnd: isoString }),
+  /** `tz` is the cycle's zone, so the page can show `assessmentEnd` the way the operator reads it. */
+  cycle: z.object({ id: z.string(), name: z.string(), tz: z.string(), assessmentEnd: isoString }),
   operator: z.object({
     name: z.string(),
     airport: z.object({ iata: z.string(), name: z.string() }).nullable(),
   }),
   surveyType: z.enum(SURVEY_TYPES),
-  customer: z.object({ nameMasked: z.string(), emailMasked: z.string() }),
+  /** `type` (FF | CB) is the stakeholder type the form will be filtered for. */
+  customer: z.object({ nameMasked: z.string(), emailMasked: z.string(), type: z.enum(CUSTOMER_TYPES) }),
   submittedAt: isoString.nullable(),
   expiresAt: isoString,
 });

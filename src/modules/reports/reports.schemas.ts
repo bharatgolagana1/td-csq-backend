@@ -76,12 +76,20 @@ export const assessorStats = z.object({
 });
 export type AssessorStatsDto = z.infer<typeof assessorStats>;
 
+/** SUBMITTED assessments behind the report: customers plus the operator's own self-assessment. */
+export const assessmentCounts = z.object({ total: z.number(), customer: z.number(), self: z.number() });
+export type AssessmentCountsDto = z.infer<typeof assessmentCounts>;
+
 /** What an operator sees of the country: airport ratings and ranks, never another operator's figures. */
 export const nationalTableRow = z.object({
   airportIata: z.string(),
   airportName: z.string(),
   rating: mean,
   rank: z.number().nullable(),
+  /** Airports with a figure in this table. */
+  rankOf: z.number(),
+  /** True on the airport the operator works at. */
+  isOwn: z.boolean(),
 });
 export type NationalTableRowDto = z.infer<typeof nationalTableRow>;
 
@@ -111,7 +119,10 @@ export const operatorReportResponse = z.object({
   categories: z.array(categoryReport),
   byStakeholder: z.object({ FF: meanWithN, CB: meanWithN }),
   assessorStats,
+  assessments: assessmentCounts,
   nationalTable: z.array(nationalTableRow),
+  /** Airports live on the platform (active, i.e. Phase I), whether or not they are in the table. */
+  airportsTotal: z.number(),
 });
 export type OperatorReportDto = z.infer<typeof operatorReportResponse>;
 

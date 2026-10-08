@@ -227,7 +227,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `PUT /roles/matrix` `roles.manage` `{ roles: [{ roleId, tasks: string[] }] }` → whole-matrix save, audited.
 
 ### airports
-- `GET /airports` [list] `airports.view` (filters `active`, `region`) · `GET /airports/:id` (includes operators + current market shares)
+- `GET /airports` [list] `airports.view` (filters `active`, `region`) → rows carry `operatorCount` (ACTIVE operators at the airport, one count query per page) · `GET /airports/:id` (includes `operatorCount`, operators + current market shares)
 - `POST /airports` · `PATCH /airports/:id` `airports.manage` · `POST /airports/import` (CSV) `airports.manage`
 
 ### organisations
@@ -264,9 +264,10 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate`
 - `GET /customers/import/template` → CSV template · `POST /customers/import/validate` (multipart CSV) → `{ importId, rows, accepted, rejected, errors[], preview[] }` · `POST /customers/import/:importId/commit` → creates/updates customers (transaction).
 - `GET /customers/:id/participation` → cycles the customer was sampled in and whether they submitted.
+- `GET /customers/eligible?cycleId=` [list] `customers.view` (filters `surveyType, type`; `q` over name, e-mail, contact) → `[{ customer, surveyType, key }]`: the operator's eligible entries for the cycle, expanded by the sampling rule (a BOTH customer in a BOTH cycle is two rows) and paginated server-side; 404 when the cycle is not visible or the operator is not a participant.
 
 ### sampling (ACO scope)
-- `GET /sampling/cycles/:cycleId` `sampling.view` → `{ participant, required, selectedCount, lockable: boolean, shortfallRule: 'SELECT_ALL'|null, eligibleCount, selection: [{ customer, surveyType, state }] }`
+- `GET /sampling/cycles/:cycleId` `sampling.view` → `{ participant, required, selectedCount, lockable: boolean, shortfallRule: 'SELECT_ALL'|null, eligibleCount, selection: [{ customer, surveyType, state }] }`; `participant.sampling` carries `lockedBy` / `unlockedBy` as user ids and, resolved through identity, `lockedByUser` / `unlockedByUser` as `{ id, name } | null`.
 - `PUT /sampling/cycles/:cycleId/selection` `sampling.manage` `{ add: [{ customerId, surveyType }], remove: [...] }` (only while sampling is open and not locked)
 - `POST /sampling/cycles/:cycleId/select-all` `sampling.manage` (allowed when eligible < required)
 - `POST /sampling/cycles/:cycleId/lock` `sampling.lock` → transaction: requires selectedCount ≥ required (or eligible < required and all selected); samples → LOCKED; participant LOCKED; invitations PENDING created; audit; e-mail confirmation.
@@ -279,7 +280,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `POST /invitations/:id/revoke` `sampling.manage`
 
 ### public participant flow (`/public/assess`)
-- `GET /public/assess/:token` public → `{ state, cycle { name, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked }, submittedAt? }` (404 unknown; state EXPIRED after `expiresAt`). Moves SENT → OPENED.
+- `GET /public/assess/:token` public → `{ state, cycle { id, name, tz, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked, type: FF|CB }, submittedAt?, expiresAt }` (404 unknown; state EXPIRED after `expiresAt`; `tz` is the cycle's zone for showing `assessmentEnd`, `type` the stakeholder type the form will take). Moves SENT → OPENED.
 - `POST /public/assess/:token/otp` public, rate-limited 3/10 min → `{ sent: true, devOtp? }` (`devOtp` only when `DEMO_REVEAL_OTP=true`).
 - `POST /public/assess/:token/verify` `{ otp }` → `{ sessionToken, expiresAt }` (HS256, 12 h, `{ inv, asg, aco }`); 5 wrong attempts → `OTP_INVALID` until a new OTP is requested.
 - With header `x-csq-link-token`: `GET /public/assess/:token/form` → `{ survey, categories → subcategories → questions }` filtered to the customer's stakeholder type; `GET …/draft` → answers; `PATCH …/answers` `{ answers: [{ questionId, rating?, na?, comment?, followUp? }] }` (merge; returns progress); `GET …/readiness` → `{ answered, total, missing: [questionId] }`; `POST …/submit` → SUBMITTED (locks; invitation SUBMITTED; participant stats; e-mail thank-you).
@@ -292,7 +293,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 
 ### scoring and reports
 - `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`).
-- `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, nationalTable: [{ airportIata, airportName, rating, rank }] }`
+- `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, assessments { total, customer, self } (SUBMITTED assessments by kind, counted live), nationalTable: [{ airportIata, airportName, rating, rank, rankOf, isOwn }] (`isOwn` on the operator's airport), airportsTotal }` (`airportsTotal` = active, i.e. Phase-I, airports on the platform, so the UI can say "+ N more airports live")
 - `GET /reports/operator/:acoId/questions?cycleId=` → question-level table with comments count
 - `GET /reports/airport/:airportId?cycleId=` `reports.airport` → weighted airport score, operators table (platform/airport only), categories
 - `GET /reports/national?cycleId=&surveyType=` `reports.national` → airports ranked, operators ranked, category averages, participation

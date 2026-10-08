@@ -12,6 +12,8 @@ import {
   createCustomerBody,
   customerListQuery,
   customerResponse,
+  eligibleEntryResponse,
+  eligibleQuery,
   importCommitResponse,
   importParams,
   importValidateQuery,
@@ -23,6 +25,7 @@ import {
   deactivateCustomer,
   getCustomerInScope,
   listCustomers,
+  listEligibleInScope,
   reactivateCustomer,
   updateCustomer,
 } from './customers.service.js';
@@ -59,6 +62,15 @@ export const customersRoutes = [
     response: customerResponse,
     status: 201,
     handler: ({ ctx, body }) => createCustomer(ctx, body),
+  }),
+  route({
+    method: 'get',
+    path: '/eligible',
+    policy: { kind: 'task', task: 'customers.view' },
+    summary: 'Eligible (customer, surveyType) entries of the operator for a cycle, expanded by the sampling rule and paginated (PLATFORM: ?acoId=)',
+    query: eligibleQuery,
+    response: z.array(eligibleEntryResponse),
+    handler: ({ ctx, query }) => listEligibleInScope(ctx, query),
   }),
 
   route({

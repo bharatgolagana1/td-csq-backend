@@ -7,13 +7,14 @@ import { AppError } from '../../core/errors.js';
 import { idString, toId } from '../../core/ids.js';
 import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
+import { OrganisationModel } from '../organisations/organisations.model.js';
 
 import { parseAirportsCsv, type AirportRow } from './airports.csv.js';
 import { AirportModel, type AirportDoc } from './airports.model.js';
 import { PHASE_I_IATA, regionForState } from './airports.regions.js';
 import type { AirportDto, AirportListQuery, CreateAirportInput, ImportResultDto, PatchAirportInput } from './airports.schemas.js';
 
-export function toAirportDto(doc: AirportDoc): AirportDto {
+export function toAirportDto(doc: AirportDoc, operatorCount: number): AirportDto {
   return {
     id: idString(doc._id),
     iata: doc.iata,
@@ -26,9 +27,27 @@ export function toAirportDto(doc: AirportDoc): AirportDto {
     lat: doc.lat,
     lng: doc.lng,
     active: doc.active,
+    operatorCount,
     createdAt: doc.createdAt.toISOString(),
     updatedAt: doc.updatedAt.toISOString(),
   };
+}
+
+/** ACTIVE operator organisations per airport, in one aggregation for the whole page; airports without any are absent. */
+export async function operatorCountsByAirport(airportIds: Iterable<string | Types.ObjectId>): Promise<Map<string, number>> {
+  const unique = [...new Set([...airportIds].map(idString))];
+  if (unique.length === 0) return new Map();
+  const rows = await OrganisationModel.aggregate<{ _id: Types.ObjectId; count: number }>([
+    { $match: { type: 'ACO', status: 'ACTIVE', airportId: { $in: unique.map((id) => toId(id, 'airportId')) } } },
+    { $group: { _id: '$airportId', count: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((row) => [idString(row._id), row.count]));
+}
+
+/** The DTOs of a page of airports with their operator counts (one count query for the page). */
+export async function toAirportDtos(docs: readonly AirportDoc[]): Promise<AirportDto[]> {
+  const counts = await operatorCountsByAirport(docs.map((doc) => doc._id));
+  return docs.map((doc) => toAirportDto(doc, counts.get(idString(doc._id)) ?? 0));
 }
 
 const SORTABLE = ['iata', 'name', 'city', 'state', 'region', 'active', 'createdAt'] as const;
@@ -45,7 +64,7 @@ export async function listAirports(query: AirportListQuery): Promise<Page<Airpor
     AirportModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AirportDoc[]>(),
     AirportModel.countDocuments(filter),
   ]);
-  return pageOf(docs.map(toAirportDto), total, query);
+  return pageOf(await toAirportDtos(docs), total, query);
 }
 
 export async function findAirportById(id: string | Types.ObjectId): Promise<AirportDoc | null> {
@@ -66,7 +85,9 @@ export async function findAirportByIata(iata: string): Promise<AirportDoc | null
 export async function getAirport(id: string): Promise<AirportDto> {
   const doc = await findAirportById(id);
   if (!doc) throw new AppError('NOT_FOUND', 'Airport not found');
-  return toAirportDto(doc);
+  const [dto] = await toAirportDtos([doc]);
+  if (!dto) throw new AppError('NOT_FOUND', 'Airport not found');
+  return dto;
 }
 
 /** VALIDATION (the airport is an input of another record) rather than 404. */
@@ -98,7 +119,7 @@ export async function createAirport(ctx: RequestContext, input: CreateAirportInp
       active: input.active,
     })
   ).toObject();
-  const dto = toAirportDto(created);
+  const dto = toAirportDto(created, 0);
   await audit(ctx, { action: 'airport.created', entity: 'airport', entityId: dto.id, after: dto });
   return dto;
 }
@@ -121,8 +142,9 @@ export async function updateAirport(ctx: RequestContext, id: string, patch: Patc
   }
   const after = await AirportModel.findByIdAndUpdate(before._id, { $set }, { new: true }).lean<AirportDoc>();
   if (!after) throw new AppError('NOT_FOUND', 'Airport not found');
-  const dto = toAirportDto(after);
-  await audit(ctx, { action: 'airport.updated', entity: 'airport', entityId: dto.id, before: toAirportDto(before), after: dto });
+  const [dto] = await toAirportDtos([after]);
+  if (!dto) throw new AppError('NOT_FOUND', 'Airport not found');
+  await audit(ctx, { action: 'airport.updated', entity: 'airport', entityId: dto.id, before: toAirportDto(before, dto.operatorCount), after: dto });
   return dto;
 }
 

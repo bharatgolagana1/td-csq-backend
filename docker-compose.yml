@@ -1,0 +1,77 @@
+# One-box deployment of CSQ: Mongo (single-node replica set), the API and the
+# web app. Keycloak is hosted at https://auth.tinydata.in/ and is not part of
+# this stack. TLS and the public hostnames (api.dev.csq.aero,
+# app.dev.csq.aero) are the host's nginx, see deploy/nginx/csq.conf; the
+# containers only ever listen on 127.0.0.1.
+#
+# Variables (shell or a `.env` next to this file):
+#   API_TAG, WEB_TAG       image tags; use the git short SHA of each repo so a
+#                          rollback is `API_TAG=<sha> docker compose up -d api`
+#   WEB_CONTEXT            path to the td-csq-frontend checkout (default ../td-csq-frontend)
+#   VITE_API_BASE_URL, VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM, VITE_KEYCLOAK_CLIENT_ID
+#                          baked into the web bundle at build time (Vite inlines
+#                          import.meta.env); rebuild the web image to change them
+#
+# The API's environment is deploy/api.env (copy deploy/api.env.example;
+# every variable is explained there). deploy/README.md is the runbook.
+
+name: csq
+
+services:
+  mongo:
+    image: mongo:7.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # A replica set is required, not optional: multi-document transactions
+      # are what make the sampling batch commit atomically. rs.status()
+      # throws on an uninitiated node, so initiate on first check. The member
+      # is advertised as 127.0.0.1:27017 so a host-run `npm run dev` with
+      # ?replicaSet=rs0 works; the api container therefore connects with
+      # ?directConnection=true (no discovery) rather than ?replicaSet=rs0.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '127.0.0.1:27017' }] }).ok }"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  api:
+    image: csq-api:${API_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - deploy/api.env
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    logging: *logging
+
+  web:
+    image: csq-web:${WEB_TAG:-latest}
+    build:
+      context: ${WEB_CONTEXT:-../td-csq-frontend}
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://api.dev.csq.aero/api/v1}
+        VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-https://auth.tinydata.in/}
+        VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-csq}
+        VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-csq-frontend}
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  mongo-data:

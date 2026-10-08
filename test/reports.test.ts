@@ -32,13 +32,15 @@ const store = vi.hoisted(() => ({
   national: new Map<string, NationalRowView[]>(),
   trees: new Map<string, SurveyTreeView>(),
   assessments: new Map<string, SubmittedAssessmentView[]>(),
+  /** SUBMITTED self-assessments per `cycle:aco:surveyType` (the customer ones are counted from `assessments`). */
+  selfSubmitted: new Map<string, number>(),
 }));
 
 vi.mock('../src/modules/reports/reports.sources.js', async () => {
   const { idString: asString } = await import('../src/core/ids.js');
   const { AppError } = await import('../src/core/errors.js');
   const { findOrganisationById, findOrganisationsByIds } = await import('../src/modules/organisations/organisations.service.js');
-  const { findAirportById, findAirportsByIds } = await import('../src/modules/airports/airports.service.js');
+  const { findAirportById, findAirportsByIds, listAirports } = await import('../src/modules/airports/airports.service.js');
   interface Ctx {
     scope: { kind: 'PLATFORM' } | { kind: 'ACO'; acoId: string } | { kind: 'AIRPORT'; airportId: string };
   }
@@ -82,6 +84,12 @@ vi.mock('../src/modules/reports/reports.sources.js', async () => {
     },
     loadSubmittedCustomerAssessments: async (cycleId: string, acoId: string, surveyType: string) =>
       store.assessments.get(`${cycleId}:${acoId}:${surveyType}`) ?? [],
+    loadSubmittedAssessmentCounts: async (cycleId: string, acoId: string, surveyType: string) => {
+      const customer = (store.assessments.get(`${cycleId}:${acoId}:${surveyType}`) ?? []).length;
+      const self = store.selfSubmitted.get(`${cycleId}:${acoId}:${surveyType}`) ?? 0;
+      return { total: customer + self, customer, self };
+    },
+    countActiveAirports: async () => (await listAirports({ page: 1, pageSize: 1, active: true })).meta.total,
     loadOperator: async (acoId: string) => {
       const doc = await findOrganisationById(acoId);
       return doc?.type === 'ACO'
@@ -340,6 +348,7 @@ function seedFixtures(): void {
     assessment('as2', 'CB', [['S1-Q1', 4, 'ok'], ['S1-Q2', null], ['S1-Q3', 5], ['S1-Q4', 3]]),
     assessment('as3', 'FF', [['S1-Q1', 5], ['S1-Q2', 5], ['S1-Q3', 4], ['S1-Q4', 4, '  '], ['S1-Q5', 1, 'retired question']]),
   ]);
+  store.selfSubmitted.set(`${CYCLE.scored}:${a}:DOMESTIC`, 1);
 }
 
 beforeAll(async () => {
@@ -364,7 +373,21 @@ describe('GET /reports/operator/:acoId', () => {
     expect(res.status).toBe(200);
     const report = res.body.data;
     expect(Object.keys(report).sort()).toEqual(
-      ['assessorStats', 'byStakeholder', 'categories', 'comparison', 'cycle', 'feedbackDistribution', 'nationalTable', 'operator', 'overall', 'provisional', 'surveyType'].sort(),
+      [
+        'airportsTotal',
+        'assessments',
+        'assessorStats',
+        'byStakeholder',
+        'categories',
+        'comparison',
+        'cycle',
+        'feedbackDistribution',
+        'nationalTable',
+        'operator',
+        'overall',
+        'provisional',
+        'surveyType',
+      ].sort(),
     );
     expect(report.cycle).toEqual({
       id: CYCLE.scored,
@@ -385,6 +408,10 @@ describe('GET /reports/operator/:acoId', () => {
     });
     expect(report.byStakeholder).toEqual({ FF: { mean: 4.5, n: 5 }, CB: { mean: 4, n: 3 } });
     expect(report.assessorStats).toEqual({ total: 20, completed: 8, inProgress: 4, yetToStart: 8 });
+    // "4 assessments · 1 self · 3 customer" — the SUBMITTED assessments behind the figures, by kind.
+    expect(report.assessments).toEqual({ total: 4, customer: 3, self: 1 });
+    // The Phase-I airports live on the platform, in the table or not ("+ N more airports live under Phase I").
+    expect(report.airportsTotal).toBe(14);
   });
 
   it('orders categories and subcategories by the survey, matching score rows on code, with previous / delta / suppressed per level', async () => {
@@ -418,15 +445,22 @@ describe('GET /reports/operator/:acoId', () => {
     ]);
   });
 
-  it('gives an ACO its national table as airport ratings and ranks only, never another operator', async () => {
+  it('gives an ACO its national table as airport ratings and ranks only, never another operator, with its own airport flagged', async () => {
     const res = await adminA.get(`/api/v1/reports/operator/${a}?cycleId=${CYCLE.scored}`);
     expect(res.status).toBe(200);
     expect(res.body.data.nationalTable).toEqual([
-      { airportIata: 'DEL', airportName: DEL_NAME, rating: 4.11, rank: 1 },
-      { airportIata: 'BOM', airportName: BOM_NAME, rating: null, rank: null },
+      { airportIata: 'DEL', airportName: DEL_NAME, rating: 4.11, rank: 1, rankOf: 1, isOwn: true },
+      { airportIata: 'BOM', airportName: BOM_NAME, rating: null, rank: null, rankOf: 1, isOwn: false },
     ]);
     expect(JSON.stringify(res.body)).not.toContain('Bravo');
     expect(JSON.stringify(res.body)).not.toContain(b);
+
+    // Charlie works at BOM: the same table, the other row flagged.
+    const charlie = await superAdmin.get(`/api/v1/reports/operator/${c}?cycleId=${CYCLE.scored}`);
+    expect((charlie.body.data.nationalTable as { airportIata: string; isOwn: boolean }[]).map((row) => [row.airportIata, row.isOwn])).toEqual([
+      ['DEL', false],
+      ['BOM', true],
+    ]);
   });
 
   it('defaults to the latest SCORED cycle the operator took part in, else the live one flagged provisional', async () => {
@@ -441,7 +475,14 @@ describe('GET /reports/operator/:acoId', () => {
 
     const onlyLive = await superAdmin.get(`/api/v1/reports/operator/${d}`);
     expect(onlyLive.status).toBe(200);
-    expect(onlyLive.body.data).toMatchObject({ cycle: { id: CYCLE.live }, provisional: true, overall: { customer: { mean: null, n: 0 }, rank: null, rankOf: 0 } });
+    expect(onlyLive.body.data).toMatchObject({
+      cycle: { id: CYCLE.live },
+      provisional: true,
+      overall: { customer: { mean: null, n: 0 }, rank: null, rankOf: 0 },
+      assessments: { total: 0, customer: 0, self: 0 },
+      nationalTable: [],
+      airportsTotal: 14,
+    });
     expect(onlyLive.body.data.categories).toHaveLength(2);
   });
 

@@ -6,11 +6,12 @@ import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { escapeRegex, pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
+import { getCycle, getParticipant } from '../cycles/cycles.service.js';
 import type { CycleType, SurveyType } from '../cycles/domain/types.js';
 import { eligibleCustomers, type EligibleEntry } from '../sampling/domain/eligibility.js';
 
 import { CustomerModel, type CustomerDoc } from './customers.model.js';
-import type { CreateCustomerInput, CustomerDto, CustomerListQuery, PatchCustomerInput } from './customers.schemas.js';
+import type { CreateCustomerInput, CustomerDto, CustomerListQuery, EligibleEntryDto, EligibleQuery, PatchCustomerInput } from './customers.schemas.js';
 import { customerScopeFilter, requireAcoTarget } from './customers.scope.js';
 
 export function toCustomerDto(doc: CustomerDoc): CustomerDto {
@@ -63,6 +64,33 @@ async function requireVisibleCustomer(ctx: RequestContext, id: string): Promise<
 
 export async function getCustomerInScope(ctx: RequestContext, id: string): Promise<CustomerDto> {
   return toCustomerDto(await requireVisibleCustomer(ctx, id));
+}
+
+/**
+ * `GET /customers/eligible?cycleId=`: the operator's eligible (customer,
+ * surveyType) entries for a cycle it takes part in — `listEligible` expanded
+ * by the sampling rule, narrowed by the optional filters and paginated here,
+ * so the sampling page need not page through the whole directory. The cycle
+ * must be visible to the caller and the operator one of its participants
+ * (404 otherwise, never 403).
+ */
+export async function listEligibleInScope(ctx: RequestContext, query: EligibleQuery): Promise<Page<EligibleEntryDto>> {
+  const scope = customerScopeFilter(ctx, query.acoId);
+  if (scope.acoId === undefined) throw new AppError('VALIDATION', 'acoId is required for platform users');
+  const acoId = idString(scope.acoId);
+  const cycle = await getCycle(ctx, query.cycleId);
+  const participant = await getParticipant(cycle.id, acoId);
+  if (!participant) throw new AppError('NOT_FOUND', 'Cycle participant not found');
+
+  const needle = query.q ? query.q.toLowerCase() : null;
+  const entries = (await listEligible(acoId, cycle.type, participant.surveyTypes)).filter(
+    (entry) =>
+      (query.surveyType === undefined || entry.surveyType === query.surveyType) &&
+      (query.type === undefined || entry.customer.type === query.type) &&
+      (needle === null || [entry.customer.name, entry.customer.email, entry.customer.contactPerson].some((value) => value.toLowerCase().includes(needle))),
+  );
+  const { skip, limit } = skipLimit(query);
+  return pageOf(entries.slice(skip, skip + limit), entries.length, query);
 }
 
 /** One e-mail per customer per operator; the conflict names the customer that holds it. */

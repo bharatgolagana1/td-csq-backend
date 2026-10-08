@@ -1,0 +1,28 @@
+# Only what the build needs reaches the daemon: package manifests, tsconfig,
+# scripts/ and src/. Everything else is noise, size, or secrets.
+.git
+.github
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+# secrets and local config never enter an image or a build context
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# not part of the runtime
+test
+docs
+deploy
+*.md
+.vscode
+.idea
+.DS_Store
+eslint.config.js
+vitest.config.ts

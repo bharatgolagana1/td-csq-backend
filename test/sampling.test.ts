@@ -277,7 +277,17 @@ describe('POST /sampling/cycles/:cycleId/lock', () => {
       lockable: false,
       reason: 'ALREADY_LOCKED',
       editable: false,
-      participant: { sampling: { status: 'LOCKED', selectedCount: 3, lockedBy: idString(adminA.user._id) } },
+      participant: {
+        sampling: {
+          status: 'LOCKED',
+          selectedCount: 3,
+          lockedBy: idString(adminA.user._id),
+          // The id resolved through identity, so the page can say who locked without a users fetch.
+          lockedByUser: { id: idString(adminA.user._id), name: 'Asha Rao' },
+          unlockedBy: null,
+          unlockedByUser: null,
+        },
+      },
     });
     expect(res.body.data.participant.sampling.lockedAt).toBeTruthy();
     expect((res.body.data.selection as { state: string }[]).every((row) => row.state === 'LOCKED')).toBe(true);
@@ -337,7 +347,15 @@ describe('POST /sampling/cycles/:cycleId/unlock', () => {
       editable: true,
       lockable: true,
       reason: null,
-      participant: { sampling: { status: 'UNLOCKED', unlockedBy: idString(superAdmin.user._id), unlockReason: 'Operator asked to swap a broker' } },
+      participant: {
+        sampling: {
+          status: 'UNLOCKED',
+          unlockedBy: idString(superAdmin.user._id),
+          unlockedByUser: { id: idString(superAdmin.user._id), name: 'Platform Admin' },
+          lockedByUser: { id: idString(adminA.user._id), name: 'Asha Rao' },
+          unlockReason: 'Operator asked to swap a broker',
+        },
+      },
     });
     expect((res.body.data.selection as { state: string }[]).every((row) => row.state === 'SELECTED')).toBe(true);
     expect(await SampleModel.countDocuments({ cycleId, acoId: acoA, state: 'LOCKED' })).toBe(0);

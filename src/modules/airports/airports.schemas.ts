@@ -16,6 +16,8 @@ export const airportResponse = z.object({
   lat: z.number(),
   lng: z.number(),
   active: z.boolean(),
+  /** ACTIVE operator (ACO) organisations at the airport. */
+  operatorCount: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

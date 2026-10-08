@@ -229,12 +229,14 @@ describe('GET /public/assess/:token', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data).toMatchObject({
       state: 'OPENED',
-      cycle: { id: cycleId, name: 'Cycle INV-BOTH' },
+      // `tz` lets the page render `assessmentEnd` in the cycle's zone; `type` is the stakeholder type the form will take.
+      cycle: { id: cycleId, name: 'Cycle INV-BOTH', tz: 'Asia/Kolkata' },
       operator: { name: 'INV-A Cargo', airport: { iata: 'DEL' } },
       surveyType: 'DOMESTIC',
-      customer: { nameMasked: 'B*** W*** L***', emailMasked: 'm****a@bothways.test' },
+      customer: { nameMasked: 'B*** W*** L***', emailMasked: 'm****a@bothways.test', type: 'FF' },
       submittedAt: null,
     });
+    expect(new Date(res.body.data.cycle.assessmentEnd).getTime()).toBeGreaterThan(Date.now());
     expect(res.body.data).not.toHaveProperty('email');
     const doc = await InvitationModel.findById(invitation._id).lean();
     expect(doc?.state).toBe('OPENED');

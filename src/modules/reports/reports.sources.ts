@@ -5,7 +5,7 @@
 // one of those contracts is absorbed here.
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString } from '../../core/ids.js';
-import { findAirportById, findAirportsByIds } from '../airports/airports.service.js';
+import { findAirportById, findAirportsByIds, listAirports } from '../airports/airports.service.js';
 import { listSubmitted } from '../assessments/assessments.service.js';
 import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
@@ -142,6 +142,13 @@ export interface SubmittedAssessmentView {
   surveyType: SurveyType;
   customerType?: 'FF' | 'CB';
   answers: { questionId: string; rating: Rating | null; na: boolean; comment: string | null }[];
+}
+
+/** How many SUBMITTED assessments an operator has for a survey type in a cycle. */
+export interface AssessmentCountsView {
+  total: number;
+  customer: number;
+  self: number;
 }
 
 export interface OperatorView {
@@ -356,7 +363,19 @@ export async function loadSubmittedCustomerAssessments(
     }));
 }
 
+/** Every SUBMITTED assessment of one operator for one survey type, counted by kind (live, not the scoring run's snapshot). */
+export async function loadSubmittedAssessmentCounts(cycleId: string, acoId: string, surveyType: SurveyType): Promise<AssessmentCountsView> {
+  const docs = (await listSubmitted(cycleId, acoId)).filter((doc) => doc.surveyType === surveyType);
+  const self = docs.filter((doc) => doc.kind === 'SELF').length;
+  return { total: docs.length, customer: docs.length - self, self };
+}
+
 // --- organisations and airports -------------------------------------------
+
+/** Airports live on the platform (`active`), whichever of them took part in a cycle. */
+export async function countActiveAirports(): Promise<number> {
+  return (await listAirports({ page: 1, pageSize: 1, active: true })).meta.total;
+}
 
 function toOperatorView(doc: OrganisationDoc): OperatorView {
   return {
