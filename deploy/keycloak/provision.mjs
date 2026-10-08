@@ -130,6 +130,14 @@ export class KeycloakAdmin {
     }
     return { status: response.status, body: parsed, headers: response.headers };
   }
+
+  /** Names of the login themes installed on the server (`/admin/serverinfo`). */
+  async loginThemes() {
+    const response = await this.fetch(`${this.baseUrl}/admin/serverinfo`, { headers: { Authorization: `Bearer ${this.token}`, Accept: 'application/json' } });
+    if (!response.ok) throw new KeycloakError(response.status, 'could not read the server info');
+    const info = await response.json();
+    return (info.themes?.login ?? []).map((theme) => theme.name);
+  }
 }
 
 /** Keycloak's error bodies carry `errorMessage` or `error`; nothing else is echoed. */
@@ -279,18 +287,52 @@ export async function ensureClient(kc, realm, exported, webOrigins, { dryRun, lo
   return { clientId: desired.clientId, action: changed.length === 0 ? 'unchanged' : dryRun ? 'update' : 'updated', id: existing.id };
 }
 
+/**
+ * Realm settings a later run keeps in step with the export. Everything else on
+ * the realm (session lifetimes, brute-force settings, …) is an administrator's
+ * to tune in the console and is written only when the realm is created.
+ */
+const REALM_FIELDS = ['displayName', 'displayNameHtml', 'loginTheme'];
+
+/**
+ * The export's login theme, or undefined when the server does not have it
+ * installed: a realm pointing at a missing theme would render Keycloak's
+ * default instead, so the current value is left alone and the log says how to
+ * install it (deploy/keycloak/theme/README.md).
+ */
+async function installedLoginTheme(kc, realm, exported, log) {
+  const wanted = exported.loginTheme;
+  if (!wanted) return undefined;
+  if ((await kc.loginThemes()).includes(wanted)) return wanted;
+  log(`realm ${realm}: login theme "${wanted}" is not installed on the server; leaving the login theme as it is (see deploy/keycloak/theme/README.md)`);
+  return undefined;
+}
+
+export async function ensureRealmSettings(kc, realm, current, exported, { dryRun, log }) {
+  const desired = { ...exported, loginTheme: await installedLoginTheme(kc, realm, exported, log) };
+  const patch = {};
+  for (const field of REALM_FIELDS) if (desired[field] !== undefined && desired[field] !== current[field]) patch[field] = desired[field];
+  const changed = Object.keys(patch);
+  if (changed.length === 0) return { action: 'unchanged', fields: [] };
+  log(`realm ${realm}: ${dryRun ? 'would update' : 'update'} ${changed.map((field) => `${field}="${patch[field]}"`).join(', ')}`);
+  if (!dryRun) await kc.request('PUT', `/${realm}`, { body: { realm, ...patch } });
+  return { action: dryRun ? 'update' : 'updated', fields: changed };
+}
+
 export async function ensureRealm(kc, exported, realmName, webOrigins, { dryRun, log }) {
   const realm = realmName ?? exported.realm;
   if (!realm) throw new Error('the realm export has no "realm" name and --realm was not given');
-  const { status } = await kc.request('GET', `/${realm}`, { allow: [404, 403] });
+  const { status, body: current } = await kc.request('GET', `/${realm}`, { allow: [404, 403] });
   if (status === 200) {
     log(`realm ${realm}: exists; reconciling ${exported.clients?.length ?? 0} client(s)`);
+    const settings = await ensureRealmSettings(kc, realm, current ?? {}, exported, { dryRun, log });
     const results = [];
     for (const client of exported.clients ?? []) results.push(await ensureClient(kc, realm, client, webOrigins, { dryRun, log }));
-    return { realm, action: 'reconciled', clients: results };
+    return { realm, action: 'reconciled', settings, clients: results };
   }
   const representation = structuredClone(exported);
   representation.realm = realm;
+  representation.loginTheme = await installedLoginTheme(kc, realm, exported, log);
   representation.clients = (representation.clients ?? []).map((client) => desiredClient(client, webOrigins));
   const clientIds = representation.clients.map((client) => client.clientId).join(', ');
   log(`realm ${realm}: missing; ${dryRun ? 'would create' : 'create'} from export with clients ${clientIds}`);

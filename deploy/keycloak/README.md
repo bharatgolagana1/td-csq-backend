@@ -25,8 +25,9 @@ No users are in the export: passwords never belong in git.
 
 Node ≥ 22, no dependencies, idempotent. Creates the realm from the export
 when it is missing; when it exists, brings the two clients in line with the
-export (settings, redirect URIs, web origins, protocol mappers) and touches
-nothing else.
+export (settings, redirect URIs, web origins, protocol mappers), keeps the
+realm's display name and login theme as the export says (the theme only once
+the server has it installed — see below), and touches nothing else.
 
 ```sh
 export KC_URL=https://auth.tinydata.in
@@ -74,6 +75,14 @@ real-address example. Copy it to `users.json` (git-ignored) and edit.
 Every account is created enabled with `emailVerified: true` and
 `username = email`. Fictional `example.in` addresses cannot receive e-mail,
 so the demo accounts use temporary passwords.
+
+## Login theme
+
+`theme/csq/` restyles Keycloak's sign-in, first-sign-in password, reset,
+error and info pages to the landing page's design. It has to be copied onto
+the Keycloak host (`<keycloak>/themes/csq`, then a restart); the export's
+`"loginTheme": "csq"` and `provision.mjs` do the rest. `theme/README.md`
+has the steps and how to preview it.
 
 ## Console alternative
 
