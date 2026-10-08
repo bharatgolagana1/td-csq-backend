@@ -11,8 +11,10 @@
 # only ever listen on 127.0.0.1.
 #
 # Variables (shell or a `.env` next to this file):
-#   API_TAG, WEB_TAG       image tags; use the git short SHA of each repo so a
-#                          rollback is `API_TAG=<sha> docker compose up -d api`
+#   API_TAG, WEB_TAG       image tags: `latest` or a full commit SHA of each repo
+#                          (what GitHub publishes), so a rollback is
+#                          `API_TAG=<sha> docker compose up -d api`
+#   API_IMAGE, WEB_IMAGE   override the registry images (default ghcr.io/bharatgolagana1/…)
 #   WEB_CONTEXT            path to the td-csq-frontend checkout (default ../td-csq-frontend)
 #   VITE_BASE_PATH, VITE_API_BASE_URL, VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM,
 #   VITE_KEYCLOAK_CLIENT_ID
@@ -54,7 +56,9 @@ services:
         max-file: "5"
 
   api:
-    image: csq-api:${API_TAG:-latest}
+    # Published by .github/workflows/docker.yml on every push to main; the
+    # build block below is the fallback for a box that builds its own.
+    image: ${API_IMAGE:-ghcr.io/bharatgolagana1/csq-api}:${API_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -70,7 +74,7 @@ services:
     logging: *logging
 
   web:
-    image: csq-web:${WEB_TAG:-latest}
+    image: ${WEB_IMAGE:-ghcr.io/bharatgolagana1/csq-web}:${WEB_TAG:-latest}
     build:
       context: ${WEB_CONTEXT:-../td-csq-frontend}
       dockerfile: Dockerfile
