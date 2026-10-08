@@ -85,7 +85,10 @@ export const identityRoutes = [
   route({
     method: 'get',
     path: '/roles',
-    policy: { kind: 'task', task: 'roles.view' },
+    // Listing role names is user-management metadata (the invite form needs
+    // it); the list is already scoped to the caller's organisation type.
+    // The matrix itself stays behind roles.view / roles.manage.
+    policy: { kind: 'task', task: 'users.view' },
     response: z.array(roleResponse),
     handler: ({ ctx }) => listRoles(ctx),
   }),

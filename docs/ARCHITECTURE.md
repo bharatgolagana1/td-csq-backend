@@ -222,7 +222,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /users` [list] `users.view` (PLATFORM: all; ACO/AIRPORT: own org's members) → `{ id, name, email, phone, status, memberships[] , lastLoginAt }`
 - `POST /users` `users.manage` body `{ name, email, phone?, orgId, roleCode }` → creates user INVITED + membership; sends invite e-mail (Keycloak user created when admin API configured).
 - `PATCH /users/:id` `users.manage` `{ name?, phone?, status? }` · `POST /users/:id/memberships` `{ orgId, roleCode }` · `DELETE /users/:id/memberships/:membershipId`
-- `GET /roles` `roles.view` → roles with task counts · `POST /roles` `roles.manage` `{ code, name, description, scope }` · `PATCH /roles/:id`
+- `GET /roles` `users.view` (scoped to the caller's organisation type; the invite form needs it) → roles with task counts · `POST /roles` `roles.manage` `{ code, name, description, scope }` · `PATCH /roles/:id`
 - `GET /roles/matrix` `roles.view` → `{ tasks: [{ code, module, name, description }], roles: [{ id, code, name, scope, system, tasks: string[] }] }`
 - `PUT /roles/matrix` `roles.manage` `{ roles: [{ roleId, tasks: string[] }] }` → whole-matrix save, audited.
 
