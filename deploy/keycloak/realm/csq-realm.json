@@ -1,7 +1,7 @@
 {
   "realm": "csq",
   "displayName": "CSQ · Cargo Service Quality",
-  "loginTheme": "csq",
+  "loginTheme": "csq-theme-v1",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,

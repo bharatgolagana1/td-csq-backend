@@ -78,10 +78,10 @@ so the demo accounts use temporary passwords.
 
 ## Login theme
 
-`theme/csq/` restyles Keycloak's sign-in, first-sign-in password, reset,
+`theme/csq-theme-v1/` restyles Keycloak's sign-in, first-sign-in password, reset,
 error and info pages to the landing page's design. It has to be copied onto
-the Keycloak host (`<keycloak>/themes/csq`, then a restart); the export's
-`"loginTheme": "csq"` and `provision.mjs` do the rest. `theme/README.md`
+the Keycloak host (`<keycloak>/themes/csq-theme-v1`, then a restart); the
+export's `"loginTheme": "csq-theme-v1"` and `provision.mjs` do the rest. `theme/README.md`
 has the steps and how to preview it.
 
 ## Console alternative
