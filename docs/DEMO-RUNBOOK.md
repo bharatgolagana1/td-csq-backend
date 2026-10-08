@@ -1,5 +1,9 @@
 # Demo runbook — 9 Oct 2026
 
+**Live site:** https://dev.csq.aero → *Sign in* → https://dev.csq.aero/app (API at
+https://dev.csq.aero/api/v1). The demo data is loaded there; nothing needs to run
+on the laptop. The local setup below is the fallback.
+
 Everything runs on the laptop: MongoDB (Homebrew service), the API on 4000,
 the web app on 5173. Identity is the hosted Keycloak realm `csq` on
 https://auth.tinydata.in/ — it must exist before anyone can sign in (see

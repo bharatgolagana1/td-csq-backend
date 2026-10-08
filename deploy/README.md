@@ -165,6 +165,18 @@ docker compose exec api node dist/seed/demo.js --super-admin email=you@acfi.in n
 # --reset rebuilds everything tagged demo:true
 ```
 
+> **Seed demo data with the API stopped.** The running API's `invitations.expire`
+> job marks any invitation whose window has passed as expired every minute, and
+> the demo seed builds *past* cycles — so it must run without the scheduler:
+>
+> ```sh
+> docker compose stop api
+> docker compose run --rm --no-deps -T api node dist/seed/demo.js --reset        # optional: wipe demo data
+> docker compose run --rm --no-deps -T api node dist/seed/demo.js --super-admin email=… name="…"
+> docker compose start api
+> ```
+
+
 Without `--super-admin` the demo acts as `acfi.admin@example.in`.
 
 ### 7. Install `csq-single-host.conf`
