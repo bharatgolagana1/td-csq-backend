@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { assertTask } from '../../core/auth/rbac.js';
 import { route } from '../../core/http.js';
-import { assessmentFormResponse, draftResponse, patchAnswersResponse, readinessResponse } from '../assessments/assessments.schemas.js';
+import { assessmentFormResponse, draftResponse, patchSectionRemarksBody, sectionRemarkResponse, patchAnswersResponse, readinessResponse } from '../assessments/assessments.schemas.js';
 
 import {
   answersBody,
@@ -18,9 +18,10 @@ import {
 } from './invitations.schemas.js';
 import { listInvitations, resendInvitation, revokeInvitation } from './invitations.service.js';
 import {
-  participantDraft,
+participantDraft,
   participantForm,
   participantPatchAnswers,
+  participantPatchSectionRemarks,
   participantReadiness,
   participantStatus,
   participantSubmit,
@@ -132,6 +133,26 @@ export const invitationsRoutes = [
     response: patchAnswersResponse,
     handler: ({ params, link, body }) => participantPatchAnswers(params.token, link, body),
   }),
+
+  route({
+    method: 'patch',
+    path: '/public/assess/:token/remarks',
+    policy: PARTICIPANT,
+    summary: 'Save section remarks for a verified participant',
+    params: tokenParams,
+    body: patchSectionRemarksBody,
+    response: z.object({
+      sectionRemarks: z.array(sectionRemarkResponse),
+      lastSavedAt: z.string(),
+    }),
+    handler: ({ params, link, body }) =>
+      participantPatchSectionRemarks(
+        params.token,
+        link,
+        body.sectionRemarks,
+      ),
+  }),
+  
   route({
     method: 'get',
     path: '/public/assess/:token/readiness',

@@ -10,6 +10,8 @@ import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
 import type { AssessmentFormDto, DraftDto, PatchAnswersResult, ReadinessDto } from '../assessments/assessments.schemas.js';
+import type { StoredSectionRemark } from '../assessments/assessments.model.js';
+import { patchSectionRemarks } from '../assessments/assessments.service.js';
 import { send } from '../notifications/notifications.service.js';
 
 import {
@@ -294,6 +296,27 @@ export async function participantDraft(token: string, link: LinkSession): Promis
 export async function participantPatchAnswers(token: string, link: LinkSession, input: AnswersInput): Promise<PatchAnswersResult> {
   const { assessmentId } = await requireLinkedInvitation(token, link);
   return patchAssessmentAnswers(assessmentId, input.answers);
+}
+
+export async function participantPatchSectionRemarks(
+  token: string,
+  link: LinkSession,
+  sectionRemarks: readonly StoredSectionRemark[],
+) {
+  // Reuse the existing participant-link verification.
+  const { assessmentId, invitation } =
+    await requireLinkedInvitation(token, link);
+
+  // Do not allow modifications after submission.
+  if (invitation.state === 'SUBMITTED') {
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      'This assessment has already been submitted',
+    );
+  }
+
+  // Save Remarks to the participant's own assessment.
+  return patchSectionRemarks(assessmentId, sectionRemarks);
 }
 
 export async function participantReadiness(token: string, link: LinkSession): Promise<ReadinessDto> {

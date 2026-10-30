@@ -27,7 +27,7 @@ import {
   type AssessmentForm,
 } from './assessments.form.js';
 import { assessorView, maskEmail, revealsIdentity, type AssessorIdentity } from './assessments.identity.js';
-import { AssessmentModel, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer } from './assessments.model.js';
+import { AssessmentModel, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer, type StoredSectionRemark, } from './assessments.model.js';
 import type {
   AnswerDto,
   AssessmentDetailDto,
@@ -177,6 +177,7 @@ export async function getDraft(assessmentId: string): Promise<DraftDto> {
     id: idString(doc._id),
     status: doc.status,
     answers: doc.answers.map(toAnswerDto),
+    sectionRemarks: (doc.sectionRemarks ?? []).map((item) => ({categoryId: item.categoryId, remark: item.remark, })),
     progress: progressOf(doc.answeredCount, doc.questionCount),
     lastSavedAt: doc.lastSavedAt?.toISOString() ?? null,
     submittedAt: doc.submittedAt?.toISOString() ?? null,
@@ -205,6 +206,90 @@ export async function patchAnswers(assessmentId: string, answers: readonly Answe
   if (!updated) throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted; answers are read-only');
   return { ...progressOf(readiness.answered, readiness.total), lastSavedAt: now.toISOString() };
 }
+
+export async function patchSectionRemarks(
+  assessmentId: string,
+  sectionRemarks: readonly StoredSectionRemark[],
+): Promise<{
+  sectionRemarks: StoredSectionRemark[];
+  lastSavedAt: string;
+}> {
+  const doc = await requireAssessment(assessmentId);
+
+  if (doc.status === 'SUBMITTED') {
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      'Assessment already submitted; remarks are read-only',
+    );
+  }
+
+  const form = await formFor(doc);
+
+  const validCategoryIds = new Set(
+    form.categories.map((category) => category.id),
+  );
+
+  const seen = new Set<string>();
+
+  const cleaned = sectionRemarks.map((item) => {
+    const categoryId = item.categoryId.trim();
+    const remark = item.remark.trim();
+
+    if (!validCategoryIds.has(categoryId)) {
+      throw new AppError(
+        'VALIDATION',
+        'Invalid assessment section',
+        { categoryId },
+      );
+    }
+
+    if (seen.has(categoryId)) {
+      throw new AppError(
+        'VALIDATION',
+        'Duplicate section remarks',
+        { categoryId },
+      );
+    }
+
+    if (remark.length > 2000) {
+      throw new AppError(
+        'VALIDATION',
+        'Section remarks cannot exceed 2000 characters',
+        { categoryId },
+      );
+    }
+
+    seen.add(categoryId);
+
+    return { categoryId, remark };
+  });
+
+  const now = new Date();
+
+  const updated = await AssessmentModel.findOneAndUpdate(
+    { _id: doc._id, status: 'DRAFT' },
+    {
+      $set: {
+        sectionRemarks: cleaned,
+        lastSavedAt: now,
+      },
+    },
+    { new: true },
+  ).lean<AssessmentDoc | null>();
+
+  if (!updated) {
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      'Assessment already submitted; remarks are read-only',
+    );
+  }
+
+  return {
+    sectionRemarks: updated.sectionRemarks ?? [],
+    lastSavedAt: now.toISOString(),
+  };
+}
+
 
 export async function readiness(assessmentId: string): Promise<ReadinessDto> {
   const doc = await requireAssessment(assessmentId);
@@ -238,9 +323,36 @@ export async function submit(actor: RequestContext | LinkSession, assessmentId: 
   const doc = await requireAssessment(assessmentId);
   assertActorMayAccess(actor, doc);
   if (doc.status === 'SUBMITTED') throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted');
-  const ready = readinessOf(await formFor(doc), doc.answers);
+  const form = await formFor(doc);
+  const ready = readinessOf(form, doc.answers);
   if (!ready.complete) {
     throw new AppError('PRECONDITION_FAILED', `Answer every question before submitting (${ready.missing.length} left)`, { missing: ready.missing });
+  }
+
+  // NEW: Every assessment category must have non-empty Remarks.
+  const savedSectionRemarks = new Map(
+    (doc.sectionRemarks ?? []).map((item) => [
+      item.categoryId,
+      item.remark,
+    ]),
+  );
+
+  const missingSectionRemarks = form.categories
+    .filter((category) => {
+      const remark = savedSectionRemarks.get(category.id);
+      return !remark || remark.trim().length === 0;
+    })
+    .map((category) => ({
+      categoryId: category.id,
+      categoryName: category.name,
+    }));
+
+  if (missingSectionRemarks.length > 0) {
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      'Please enter Remarks for every assessment section before submitting.',
+      { missingSectionRemarks },
+    );
   }
 
   const ctx: AnyContext = isLinkSession(actor)
@@ -357,6 +469,20 @@ export async function patchSelfAnswers(
 ): Promise<PatchAnswersResult> {
   const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
   return patchAnswers(idString(doc._id), answers);
+}
+
+export async function patchSelfSectionRemarks(
+  ctx: RequestContext,
+  cycleId: string,
+  surveyType: SurveyType,
+  sectionRemarks: readonly StoredSectionRemark[],
+) {
+  const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
+
+  return patchSectionRemarks(
+    idString(doc._id),
+    sectionRemarks,
+  );
 }
 
 export async function submitSelf(ctx: RequestContext, cycleId: string, surveyType: SurveyType): Promise<AssessmentDto> {
