@@ -11,6 +11,8 @@ import {
   historyRowResponse,
   patchAnswersBody,
   patchAnswersResponse,
+  patchSectionRemarksBody,
+  sectionRemarkResponse,
   selfAssessmentResponse,
   selfParams,
 } from './assessments.schemas.js';
@@ -20,6 +22,7 @@ import {
   getSelfAssessment,
   listAssessments,
   patchSelfAnswers,
+  patchSelfSectionRemarks,
   submitSelf,
 } from './assessments.service.js';
 
@@ -66,6 +69,27 @@ export const assessmentsRoutes = [
     response: patchAnswersResponse,
     handler: ({ ctx, params, body }) => patchSelfAnswers(ctx, params.cycleId, params.surveyType, body.answers),
   }),
+
+   route({
+    method: 'patch',
+    path: '/self/:cycleId/:surveyType/remarks',
+    policy: { kind: 'task', task: 'assessments.self' },
+    summary: 'Save section remarks for the operator self-assessment',
+    params: selfParams,
+    body: patchSectionRemarksBody,
+    response: z.object({
+      sectionRemarks: z.array(sectionRemarkResponse),
+      lastSavedAt: z.string(),
+    }),
+    handler: ({ ctx, params, body }) =>
+      patchSelfSectionRemarks(
+        ctx,
+        params.cycleId,
+        params.surveyType,
+        body.sectionRemarks,
+      ),
+  }),
+  
   route({
     method: 'post',
     path: '/self/:cycleId/:surveyType/submit',

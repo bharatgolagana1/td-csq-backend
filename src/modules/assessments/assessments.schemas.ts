@@ -23,6 +23,12 @@ export const answerResponse = z.object({
   followUp: z.array(z.string()),
 });
 export type AnswerDto = z.infer<typeof answerResponse>;
+export const sectionRemarkResponse = z.object({
+  categoryId: z.string(),
+  remark: z.string(),
+});
+
+export type SectionRemarkDto = z.infer<typeof sectionRemarkResponse>;
 
 /** What every path returns about an assessment (no answers, no identity). */
 export const assessmentResponse = z.object({
@@ -111,6 +117,7 @@ export const draftResponse = z.object({
   id: z.string(),
   status: z.enum(ASSESSMENT_STATUSES),
   answers: z.array(answerResponse),
+  sectionRemarks: z.array(sectionRemarkResponse).optional(),
   progress: progressResponse,
   lastSavedAt: z.string().nullable(),
   submittedAt: z.string().nullable(),
@@ -131,6 +138,18 @@ export const answerInputSchema = z
 export const patchAnswersBody = z.object({ answers: z.array(answerInputSchema).max(500) }).strict();
 export type PatchAnswersInput = z.infer<typeof patchAnswersBody>;
 
+export const sectionRemarkInputSchema = z.object({
+  categoryId: z.string().trim().min(1).max(64),
+  remark: z.string().trim().max(2000),
+}).strict();
+
+export const patchSectionRemarksBody = z.object({
+  sectionRemarks: z.array(sectionRemarkInputSchema).max(100),
+}).strict();
+
+export type PatchSectionRemarksInput =
+  z.infer<typeof patchSectionRemarksBody>;
+
 export const patchAnswersResponse = progressResponse.extend({ lastSavedAt: z.string().nullable() });
 export type PatchAnswersResult = z.infer<typeof patchAnswersResponse>;
 
@@ -148,7 +167,7 @@ export const selfParams = z.object({ cycleId: idSchema, surveyType: z.enum(SURVE
 export type SelfParams = z.infer<typeof selfParams>;
 
 /** `GET /assessments/self/:cycleId/:surveyType`: the form and the saved answers in one payload. */
-export const selfAssessmentResponse = assessmentFormResponse.extend({ answers: z.array(answerResponse) });
+export const selfAssessmentResponse = assessmentFormResponse.extend({ answers: z.array(answerResponse), sectionRemarks: z.array(sectionRemarkResponse).optional(), });
 export type SelfAssessmentDto = z.infer<typeof selfAssessmentResponse>;
 
 // --- signed-in history ------------------------------------------------------
