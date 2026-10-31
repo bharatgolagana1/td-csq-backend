@@ -107,6 +107,7 @@ function commitOperations(doc: CustomerImportDoc, target: AcoTarget): AnyBulkWri
           surveyType: record.data.surveyType,
           tags: record.data.tags,
           importBatchId: doc._id,
+          deletedAt: null,
         },
         $setOnInsert: { acoId: target.acoId, email: record.data.email, status: 'ACTIVE', lastSampledCycleId: null },
       },
