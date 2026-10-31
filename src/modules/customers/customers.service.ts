@@ -37,7 +37,7 @@ export function toCustomerDto(doc: CustomerDoc): CustomerDto {
 const SORTABLE = ['name', 'contactPerson', 'email', 'type', 'surveyType', 'status', 'createdAt', 'updatedAt'] as const;
 
 export async function listCustomers(ctx: RequestContext, query: CustomerListQuery): Promise<Page<CustomerDto>> {
-  const requested: FilterQuery<CustomerDoc> = {};
+  const requested: FilterQuery<CustomerDoc> = {deletedAt: null,};
   if (query.type) requested.type = query.type;
   if (query.surveyType) requested.surveyType = query.surveyType;
   if (query.status) requested.status = query.status;
@@ -57,7 +57,7 @@ export async function listCustomers(ctx: RequestContext, query: CustomerListQuer
 }
 
 async function requireVisibleCustomer(ctx: RequestContext, id: string): Promise<CustomerDoc> {
-  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx), { _id: toId(id) })).lean<CustomerDoc>();
+  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx), { _id: toId(id), deletedAt: null, })).lean<CustomerDoc>();
   if (!doc) throw new AppError('NOT_FOUND', 'Customer not found');
   return doc;
 }
@@ -109,8 +109,69 @@ async function assertEmailFree(acoId: Types.ObjectId, email: string, except?: Ty
 
 export async function createCustomer(ctx: RequestContext, input: CreateCustomerInput): Promise<CustomerDto> {
   const target = await requireAcoTarget(ctx, input.acoId);
+  const contactPerson =
+    input.contactPerson === undefined || input.contactPerson === ''
+      ? input.name
+      : input.contactPerson;
+
+  // NEW: Check for a previously deleted customer.
+  const existing = await CustomerModel.findOne({
+    acoId: target.acoId,
+    email: input.email,
+  }).lean<CustomerDoc>();
+
+  // NEW: Restore the deleted customer instead of creating a duplicate.
+  if (existing?.deletedAt) {
+    const restored = await CustomerModel.findOneAndUpdate(
+      {
+        _id: existing._id,
+        acoId: target.acoId,
+        deletedAt: existing.deletedAt,
+      },
+      {
+        $set: {
+          airportId: target.airportId,
+          name: input.name,
+          contactPerson,
+          phone: input.phone,
+          type: input.type,
+          surveyType: input.surveyType,
+          tags: input.tags ?? [],
+          deletedAt: null,
+        },
+      },
+      { new: true },
+    ).lean<CustomerDoc | null>();
+
+    if (!restored) {
+      throw new AppError(
+        'CONFLICT',
+        'Customer was modified while being restored. Please try again.',
+      );
+    }
+
+    const dto = toCustomerDto(restored);
+
+    await audit(ctx, {
+      action: 'customer.updated',
+      entity: 'customer',
+      entityId: dto.id,
+      before: {
+        ...toCustomerDto(existing),
+        deletedAt: existing.deletedAt.toISOString(),
+      },
+      after: {
+        ...dto,
+        deletedAt: null,
+      },
+      orgId: dto.acoId,
+    });
+
+    return dto;
+  }
+
+  // Keep the existing duplicate-email validation.
   await assertEmailFree(target.acoId, input.email);
-  const contactPerson = input.contactPerson === undefined || input.contactPerson === '' ? input.name : input.contactPerson;
   const created = (
     await CustomerModel.create({
       acoId: target.acoId,
@@ -189,6 +250,53 @@ export async function reactivateCustomer(ctx: RequestContext, id: string): Promi
   return dto;
 }
 
+export async function deleteCustomer(
+  ctx: RequestContext,
+  id: string,
+): Promise<{ id: string; deletedAt: string }> {
+  const before = await requireVisibleCustomer(ctx, id);
+  const now = new Date();
+
+  const updated = await CustomerModel.findOneAndUpdate(
+    {
+      _id: before._id,
+      acoId: before.acoId,
+      deletedAt: null,
+    },
+    {
+      $set: { deletedAt: now },
+    },
+    { new: true },
+  ).lean<CustomerDoc | null>();
+
+  if (!updated) {
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      'Customer has already been deleted',
+    );
+  }
+
+  await audit(ctx, {
+    action: 'customer.deleted',
+    entity: 'customer',
+    entityId: idString(updated._id),
+    before: {
+      name: before.name,
+      status: before.status,
+      deletedAt: before.deletedAt ?? null,
+    },
+    after: {
+      deletedAt: now.toISOString(),
+    },
+    orgId: idString(updated.acoId),
+  });
+
+  return {
+    id: idString(updated._id),
+    deletedAt: now.toISOString(),
+  };
+}
+
 // --- exported to higher modules (WAVE1-BRIEF §2) -----------------------------
 
 /** A customer of the operator, whatever its status; another operator's id is NOT_FOUND. */
@@ -209,7 +317,7 @@ export async function listEligible(
   cycleType: CycleType,
   participantSurveyTypes?: readonly SurveyType[],
 ): Promise<EligibleEntry<CustomerDto>[]> {
-  const docs = await CustomerModel.find({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE' })
+  const docs = await CustomerModel.find({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null,})
     .sort({ name: 1, _id: 1 })
     .lean<CustomerDoc[]>();
   return eligibleCustomers(docs.map(toCustomerDto), cycleType, participantSurveyTypes);
@@ -217,14 +325,14 @@ export async function listEligible(
 
 /** ACTIVE customers of one operator (what the operator card shows). */
 export async function countByAco(acoId: string): Promise<number> {
-  return CustomerModel.countDocuments({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE' });
+  return CustomerModel.countDocuments({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null,});
 }
 
 /** ACTIVE customers per operator; the organisations module's customer counter. */
 export async function countByAcos(acoIds: string[]): Promise<Map<string, number>> {
   if (acoIds.length === 0) return new Map();
   const rows = await CustomerModel.aggregate<{ _id: Types.ObjectId; count: number }>([
-    { $match: { acoId: { $in: acoIds.map((id) => toId(id, 'acoId')) }, status: 'ACTIVE' } },
+    { $match: { acoId: { $in: acoIds.map((id) => toId(id, 'acoId')) }, status: 'ACTIVE', deletedAt: null } },
     { $group: { _id: '$acoId', count: { $sum: 1 } } },
   ]);
   return new Map(rows.map((row) => [idString(row._id), row.count]));
