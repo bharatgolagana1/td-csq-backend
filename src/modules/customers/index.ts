@@ -10,6 +10,11 @@ export default defineModule({
   tasks: [
     { code: 'customers.view', name: 'View customers', description: "List and open the operator's FF / CB directory" },
     { code: 'customers.manage', name: 'Manage customers', description: 'Add, edit, deactivate and bulk-import customers' },
+    {
+    code: 'customers.delete',
+    name: 'Delete customers',
+    description: 'Remove customers from the operator directory',
+  },
   ],
   routes: customersRoutes,
   registerHandlers: () => {

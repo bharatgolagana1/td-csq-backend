@@ -23,6 +23,7 @@ import {
 import {
   createCustomer,
   deactivateCustomer,
+  deleteCustomer,
   getCustomerInScope,
   listCustomers,
   listEligibleInScope,
@@ -140,5 +141,18 @@ export const customersRoutes = [
     params: customerParams,
     response: customerResponse,
     handler: ({ ctx, params }) => reactivateCustomer(ctx, params.id),
+  }),
+  route({
+    method: 'delete',
+    path: '/:id',
+    policy: { kind: 'task', task: 'customers.delete' },
+    summary: 'Soft-delete a customer from the operator directory',
+    params: customerParams,
+    response: z.object({
+      id: z.string(),
+      deletedAt: z.string(),
+    }),
+    handler: ({ ctx, params }) =>
+      deleteCustomer(ctx, params.id),
   }),
 ];
