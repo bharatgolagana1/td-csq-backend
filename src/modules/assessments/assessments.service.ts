@@ -451,6 +451,7 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
     const identity = identities[index] ?? { name: null, email: null };
     const revealed = doc.kind === 'SELF' || reveal;
     const assessor = assessorView(identity, revealed);
+    const hideCustomerIdentity = doc.kind === 'CUSTOMER' && !ctx.tasks.has('assessments.details');
     return {
       id,
       cycle: cycles.get(idString(doc.cycleId)) ?? UNKNOWN_CYCLE(idString(doc.cycleId)),
@@ -458,17 +459,21 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       kind: doc.kind,
       surveyType: doc.surveyType,
       customerType: doc.customerType,
-      customerId: revealed && doc.customerId ? idString(doc.customerId) : null,
-      assessorName: assessor.name,
-      assessorEmailMasked: identity.email === null ? null : maskEmail(identity.email),
-      assessor,
+      customerId: hideCustomerIdentity ? null : revealed && doc.customerId ? idString(doc.customerId) : null,
+      assessorName: hideCustomerIdentity ? null : assessor.name,
+      assessorEmailMasked: hideCustomerIdentity || identity.email == null ? null : maskEmail(identity.email),
+      assessor: hideCustomerIdentity ? {name: null, email: null, revealed: false} : assessor,
       status: doc.status,
       progress: progressOf(doc.answeredCount, doc.questionCount),
       startedAt: doc.startedAt.toISOString(),
       submittedAt: doc.submittedAt?.toISOString() ?? null,
-      score: ownScore(doc.answers),
-    };
-  });
+      
+      score: ctx.tasks.has('assessments.scores')
+      ? ownScore(doc.answers)
+      : null,
+
+      }
+    });
 }
 
 const SORTABLE = ['startedAt', 'submittedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
@@ -518,6 +523,15 @@ function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[]): 
 /** The read-only return: every form question with its answer; identity masked per the setting. */
 export async function getAssessment(ctx: RequestContext, id: string): Promise<AssessmentDetailDto> {
   const doc = await requireVisibleAssessment(ctx, id);
+  if (
+    doc.kind === 'CUSTOMER' &&
+    !ctx.tasks.has('assessments.details')
+  ) {
+    throw new AppError(
+      'FORBIDDEN',
+      'You do not have permission to view individual customer assessment details',
+    );
+  }
   const [row] = await toHistoryRows(ctx, [doc]);
   if (!row) throw new AppError('INTERNAL', 'History row missing');
   const form = await formFor(doc);
@@ -555,10 +569,23 @@ export interface CsvExport {
 
 /** One CSV row per assessment and form question (long format), identities masked per the setting; a cycle out of scope is 404. */
 export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQuery): Promise<CsvExport> {
+  const canViewCustomerDetails = ctx.tasks.has('assessments.details');
+
+  if (query.kind === 'CUSTOMER' && !canViewCustomerDetails) {
+    throw new AppError(
+      'FORBIDDEN',
+      'You do not have permission to export customer assessment details',
+    );
+  }
   const cycle = await cycleRef(ctx, query.cycleId);
   const requested: FilterQuery<AssessmentDoc> = { cycleId: toId(query.cycleId) };
   if (query.acoId) requested.acoId = toId(query.acoId);
   if (query.kind) requested.kind = query.kind;
+   if (!canViewCustomerDetails) {
+    requested.kind = 'SELF';
+  } else if (query.kind) {
+    requested.kind = query.kind;
+  }
   if (query.status) requested.status = query.status;
   const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
   const rows = await toHistoryRows(ctx, docs);
