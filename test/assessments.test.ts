@@ -50,6 +50,11 @@ function invitation(customerId: string, acoId: string, surveyType: 'DOMESTIC' | 
 
 beforeAll(async () => {
   t = await createTestApp();
+   // NEW: Grant full assessment access to the authorized test administrator.
+  await grantTasks('ACO_ADMIN', [
+    'assessments.scores',
+    'assessments.details',
+  ]);
   // This file asserts on the event itself; the real listeners are exercised by the flow test.
   clearEventHandlers();
   on('assessment.submitted', 'test.recordSubmitted', async (payload) => {
