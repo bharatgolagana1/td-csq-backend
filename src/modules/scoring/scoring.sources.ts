@@ -152,8 +152,18 @@ export async function loadSubmitted(cycleId: string, acoId: string, surveyType: 
     return {
       id: view.id,
       kind: view.kind,
-      ...(view.customerType ? { customerType: view.customerType } : {}),
-      answers: view.answers.map((answer) => ({ questionId: answer.questionId, rating: toRating(answer.rating), na: answer.na })),
+      answerMode: view.answerMode,
+      ...(view.customerType
+        ? { customerType: view.customerType }
+        : {}),
+      answers: view.answers.map((answer) => ({
+      questionId: answer.questionId,
+        ...(answer.direction
+          ? { direction: answer.direction }
+          : {}),
+        rating: toRating(answer.rating),
+        na: answer.na,
+      })),
     };
   });
   return { assessments, counts };

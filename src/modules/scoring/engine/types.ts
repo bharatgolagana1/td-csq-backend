@@ -63,6 +63,7 @@ export interface SurveyStructure {
 
 export interface AssessmentAnswer {
   questionId: string;
+  direction?: 'IMPORT' | 'EXPORT';
   /** `null` when NA or unanswered. */
   rating: Rating | null;
   na: boolean;
@@ -75,6 +76,7 @@ export interface SubmittedAssessment {
   /** Set on CUSTOMER assessments; drives the FF / CB split. */
   customerType?: CustomerType;
   answers: readonly AssessmentAnswer[];
+  answerMode?: 'SINGLE' | 'IMPORT_EXPORT';
 }
 
 export interface ScoringSettings {

@@ -2,8 +2,8 @@ import { model, Schema, type Types } from 'mongoose';
 
 import type { SurveyType } from '../../core/events.js';
 
-import type { ScoreLevel } from './engine/index.js';
-import { SCORE_LEVELS, SURVEY_TYPES } from './scores.model.js';
+import type { ScoreDirection, ScoreLevel } from './engine/index.js';
+import { SCORE_DIRECTIONS, SCORE_LEVELS, SURVEY_TYPES } from './scores.model.js';
 
 export interface AirportScoreOperatorDoc {
   acoId: Types.ObjectId;
@@ -25,6 +25,7 @@ export interface AirportScoreDoc {
   cycleId: Types.ObjectId;
   airportId: Types.ObjectId;
   surveyType: SurveyType;
+  direction?: ScoreDirection;
   level: ScoreLevel;
   refId: string;
   order: number;
@@ -55,6 +56,7 @@ const schema = new Schema<AirportScoreDoc>(
     cycleId: { type: Schema.Types.ObjectId, ref: 'Cycle', required: true },
     airportId: { type: Schema.Types.ObjectId, ref: 'Airport', required: true },
     surveyType: { type: String, enum: SURVEY_TYPES, required: true },
+    direction: { type: String, enum: SCORE_DIRECTIONS, default: 'SINGLE' },
     level: { type: String, enum: SCORE_LEVELS, required: true },
     refId: { type: String, required: true },
     order: { type: Number, required: true, default: 0 },
@@ -70,7 +72,17 @@ const schema = new Schema<AirportScoreDoc>(
   { timestamps: true, collection: 'airport_scores', minimize: false },
 );
 
-schema.index({ cycleId: 1, airportId: 1, surveyType: 1, level: 1, refId: 1 }, { unique: true });
+schema.index(
+  {
+    cycleId: 1,
+    airportId: 1,
+    surveyType: 1,
+    direction: 1,
+    level: 1,
+    refId: 1,
+  },
+  { unique: true },
+);
 schema.index({ cycleId: 1, surveyType: 1, level: 1, refId: 1 });
 
 export const AirportScoreModel = model<AirportScoreDoc>('AirportScore', schema);

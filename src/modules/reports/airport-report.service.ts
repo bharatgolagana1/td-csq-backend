@@ -52,7 +52,7 @@ export async function airportReport(ctx: RequestContext, airportId: string, quer
   const { cycle, participants, surveyType, provisional } = await selectAirportCycle(ctx, airportId, query);
   const surveyId = cycle.surveyVersions[surveyType];
   const [rows, tree] = await Promise.all([
-    loadAirportScores(cycle.id, airportId, surveyType),
+    loadAirportScores(cycle.id, airportId, surveyType, query.direction ?? 'SINGLE'),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
   const overall = rows.find((row) => row.level === 'OVERALL' && row.refId === OVERALL_REF_ID);
@@ -60,6 +60,9 @@ export async function airportReport(ctx: RequestContext, airportId: string, quer
   const operators = seesOperatorFigures(ctx) ? await operatorsTable(overall, participants) : undefined;
 
   return {
+    ...(query.direction && query.direction !== 'SINGLE'
+      ? { direction: query.direction }
+      : {}),
     cycle: cycleSummaryOf(cycle),
     surveyType,
     provisional,

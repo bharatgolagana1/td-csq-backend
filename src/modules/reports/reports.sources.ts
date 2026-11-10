@@ -11,7 +11,7 @@ import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
-import { OVERALL_REF_ID, type DistributionBucket, type Rating } from '../scoring/engine/index.js';
+import { OVERALL_REF_ID, type DistributionBucket, type Rating, type ScoreDirection } from '../scoring/engine/index.js';
 import type { AirportScoreDto, NationalRowDto, ScoreSetDto } from '../scoring/scoring.schemas.js';
 import { getAirportScores, getScores, nationalTable } from '../scoring/scoring.service.js';
 import { getSurveyTree } from '../surveys/surveys.service.js';
@@ -258,16 +258,26 @@ function toScoreRowView(row: ScoreSetDto['rows'][number]): ScoreRowView {
   };
 }
 
-export async function loadScores(cycleId: string, acoId: string, surveyType: SurveyType): Promise<ScoreSetView> {
-  const set: ScoreSetDto = await getScores(cycleId, acoId, surveyType);
+export async function loadScores(
+  cycleId: string,
+  acoId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<ScoreSetView> {
+  const set: ScoreSetDto = await getScores(cycleId, acoId, surveyType, direction);
   return {
     rows: set.rows.map(toScoreRowView),
     distribution: set.distribution.map((bucket) => ({ rating: bucket.rating as Rating | null, label: bucket.label, count: bucket.count, pct: bucket.pct })),
   };
 }
 
-export async function loadAirportScores(cycleId: string, airportId: string, surveyType: SurveyType): Promise<AirportScoreView[]> {
-  const rows: AirportScoreDto[] = await getAirportScores(cycleId, airportId);
+export async function loadAirportScores(
+  cycleId: string,
+  airportId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<AirportScoreView[]> {
+  const rows: AirportScoreDto[] = await getAirportScores(cycleId, airportId, direction);
   return rows
     .filter((row) => row.surveyType === surveyType)
     .map((row) => ({
@@ -288,8 +298,12 @@ export async function loadAirportScores(cycleId: string, airportId: string, surv
     }));
 }
 
-export async function loadNationalTable(cycleId: string, surveyType: SurveyType): Promise<NationalRowView[]> {
-  const rows: NationalRowDto[] = await nationalTable(cycleId, surveyType);
+export async function loadNationalTable(
+  cycleId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<NationalRowView[]> {
+  const rows: NationalRowDto[] = await nationalTable(cycleId, surveyType, direction);
   return rows.map((row) => ({
     airportId: idString(row.airportId),
     iata: row.iata,
@@ -345,21 +359,30 @@ export async function loadSubmittedCustomerAssessments(
   cycleId: string,
   acoId: string,
   surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
 ): Promise<SubmittedAssessmentView[]> {
   const docs = await listSubmitted(cycleId, acoId, 'CUSTOMER');
+  const answerMode = direction === 'SINGLE' ? 'SINGLE' : 'IMPORT_EXPORT';
+
   return docs
-    .filter((doc) => doc.surveyType === surveyType)
+    .filter((doc) => doc.surveyType === surveyType && doc.answerMode === answerMode)
     .map((doc) => ({
       id: doc.id,
       kind: doc.kind,
       surveyType: doc.surveyType,
       ...(doc.customerType ? { customerType: doc.customerType } : {}),
-      answers: doc.answers.map((answer) => ({
-        questionId: answer.questionId,
-        rating: toRating(answer.rating),
-        na: answer.na,
-        comment: answer.comment,
-      })),
+      answers: doc.answers
+        .filter((answer) =>
+          direction === 'SINGLE'
+            ? !answer.direction
+            : answer.direction === direction,
+        )
+        .map((answer) => ({
+          questionId: answer.questionId,
+          rating: toRating(answer.rating),
+          na: answer.na,
+          comment: answer.comment,
+        })),
     }));
 }
 

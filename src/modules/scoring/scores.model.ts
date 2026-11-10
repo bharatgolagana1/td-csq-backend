@@ -2,10 +2,11 @@ import { model, Schema, type Types } from 'mongoose';
 
 import type { SurveyType } from '../../core/events.js';
 
-import type { DistributionBucket, ScoreLevel, SuppressionReason } from './engine/index.js';
+import type { DistributionBucket, ScoreDirection, ScoreLevel, SuppressionReason } from './engine/index.js';
 
 export const SCORE_LEVELS = ['QUESTION', 'SUBCATEGORY', 'CATEGORY', 'OVERALL'] as const satisfies readonly ScoreLevel[];
 export const SURVEY_TYPES = ['DOMESTIC', 'INTERNATIONAL'] as const satisfies readonly SurveyType[];
+export const SCORE_DIRECTIONS = ['SINGLE', 'IMPORT', 'EXPORT'] as const satisfies readonly ScoreDirection[];
 
 export interface MeanWithNDoc {
   mean: number | null;
@@ -40,6 +41,8 @@ export interface ScoreDoc {
   acoId: Types.ObjectId;
   airportId: Types.ObjectId;
   surveyType: SurveyType;
+  /** SINGLE for historical scoring, or one Import/Export direction. */
+  direction?: ScoreDirection;
   /** The survey version the cycle pinned for `surveyType`. */
   surveyId: string;
   level: ScoreLevel;
@@ -116,6 +119,7 @@ const schema = new Schema<ScoreDoc>(
     acoId: { type: Schema.Types.ObjectId, ref: 'Organisation', required: true },
     airportId: { type: Schema.Types.ObjectId, ref: 'Airport', required: true },
     surveyType: { type: String, enum: SURVEY_TYPES, required: true },
+    direction: { type: String, enum: SCORE_DIRECTIONS, default: 'SINGLE' },
     surveyId: { type: String, required: true },
     level: { type: String, enum: SCORE_LEVELS, required: true },
     refId: { type: String, required: true },
@@ -135,7 +139,17 @@ const schema = new Schema<ScoreDoc>(
   { timestamps: true, collection: 'scores', minimize: false },
 );
 
-schema.index({ cycleId: 1, acoId: 1, surveyType: 1, level: 1, refId: 1 }, { unique: true });
+schema.index(
+  {
+    cycleId: 1,
+    acoId: 1,
+    surveyType: 1,
+    direction: 1,
+    level: 1,
+    refId: 1,
+  },
+  { unique: true },
+);
 schema.index({ cycleId: 1, surveyType: 1, level: 1 });
 schema.index({ acoId: 1, surveyType: 1 });
 

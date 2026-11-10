@@ -17,6 +17,13 @@ export const SURVEY_TYPES = ['DOMESTIC', 'INTERNATIONAL'] as const satisfies rea
 export const RATINGS = [1, 2, 3, 4, 5] as const;
 export type Rating = (typeof RATINGS)[number];
 
+export const ANSWER_DIRECTIONS = ['IMPORT', 'EXPORT'] as const;
+export type AnswerDirection = (typeof ANSWER_DIRECTIONS)[number];
+
+export const ANSWER_MODES = ['SINGLE', 'IMPORT_EXPORT'] as const;
+export type AnswerMode = (typeof ANSWER_MODES)[number];
+
+
 /**
  * One answer. `questionId` is the survey question's id as a string so the
  * assessment never depends on how the surveys module keys its questions.
@@ -26,6 +33,7 @@ export type Rating = (typeof RATINGS)[number];
  */
 export interface StoredAnswer {
   questionId: string;
+  direction?: AnswerDirection | null;
   rating: Rating | null;
   na: boolean;
   comment: string | null;
@@ -41,6 +49,8 @@ export interface AssessmentDoc {
   surveyId: string;
   surveyType: SurveyType;
   kind: AssessmentKind;
+  /** Legacy assessments use SINGLE; new assessments use IMPORT_EXPORT. */
+  answerMode?: AnswerMode;
   customerId: Types.ObjectId | null;
   customerType: CustomerType | null;
   invitationId: Types.ObjectId | null;
@@ -60,6 +70,11 @@ export interface AssessmentDoc {
 const answerSchema = new Schema<StoredAnswer>(
   {
     questionId: { type: String, required: true },
+    direction: {
+    type: String,
+    enum: [...ANSWER_DIRECTIONS, null],
+    default: null,
+   },
     rating: { type: Number, enum: [...RATINGS, null], default: null },
     na: { type: Boolean, required: true, default: false },
     comment: { type: String, default: null },
@@ -76,6 +91,12 @@ const schema = new Schema<AssessmentDoc>(
     surveyId: { type: String, required: true },
     surveyType: { type: String, enum: SURVEY_TYPES, required: true },
     kind: { type: String, enum: ASSESSMENT_KINDS, required: true },
+    answerMode: {
+      type: String,
+      enum: ANSWER_MODES,
+      default: 'SINGLE',
+    },
+
     customerId: { type: Schema.Types.ObjectId, ref: 'Customer', default: null },
     customerType: { type: String, enum: [...CUSTOMER_TYPES, null], default: null },
     invitationId: { type: Schema.Types.ObjectId, ref: 'Invitation', default: null },

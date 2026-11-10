@@ -9,7 +9,7 @@
 // its subcategories, each by `order`.
 import type { SurveyType } from '../../core/events.js';
 
-import { RATINGS, type CustomerType, type Rating, type StoredAnswer } from './assessments.model.js';
+import { RATINGS, type AnswerDirection, type AnswerMode, type CustomerType, type Rating, type StoredAnswer } from './assessments.model.js';
 
 export const COMMENT_MODES = ['OPTIONAL', 'REQUIRED', 'REQUIRED_ON_LOW', 'NONE'] as const;
 export type CommentMode = (typeof COMMENT_MODES)[number];
@@ -241,6 +241,16 @@ export interface AnswerInput {
   na?: boolean | undefined;
   comment?: string | null | undefined;
   followUp?: string[] | undefined;
+  direction?: AnswerDirection | undefined;
+}
+function answerKey(answer: {
+  questionId: string;
+  direction?: AnswerDirection | null | undefined;
+}): string {
+  return JSON.stringify([
+    answer.questionId,
+    answer.direction ?? null,
+  ]);
 }
 
 export interface AnswerIssue {
@@ -297,7 +307,16 @@ function validateOne(question: FormQuestion, input: AnswerInput, path: string): 
   }
 
   if (issues.length > 0) return { issues };
-  return { answer: { questionId: question.id, rating, na, comment, followUp: [...followUp] } };
+  return {
+  answer: {
+    questionId: question.id,
+    ...(input.direction ? { direction: input.direction } : {}),
+    rating,
+    na,
+    comment,
+    followUp: [...followUp],
+  },
+};
 }
 
 /**
@@ -306,34 +325,102 @@ function validateOne(question: FormQuestion, input: AnswerInput, path: string): 
  * the comment mode demands it (and none where it forbids it), follow-up
  * options only on Fair / Poor and only from the question's list.
  */
-export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInput[]): AnswerValidation {
-  const byId = new Map(formQuestions(form).map((question) => [question.id, question]));
+export function validateAnswers(
+  form: AssessmentForm,
+  inputs: readonly AnswerInput[],
+  answerMode: AnswerMode = 'SINGLE',
+): AnswerValidation {
+  const byId = new Map(
+    formQuestions(form).map((question) => [
+      question.id,
+      question,
+    ]),
+  );
+
   const issues: AnswerIssue[] = [];
   const answers: StoredAnswer[] = [];
   const seen = new Set<string>();
+
   inputs.forEach((input, index) => {
     const path = `answers.${index}`;
     const question = byId.get(input.questionId);
+
     if (!question) {
-      issues.push({ path: `${path}.questionId`, message: `question ${input.questionId} is not on this form` });
+      issues.push({
+        path: `${path}.questionId`,
+        message: `question ${input.questionId} is not on this form`,
+      });
       return;
     }
-    if (seen.has(input.questionId)) {
-      issues.push({ path: `${path}.questionId`, message: `question ${input.questionId} appears twice in this batch` });
+
+    // New assessments require Import or Export.
+    if (
+      answerMode === 'IMPORT_EXPORT' &&
+      !input.direction
+    ) {
+      issues.push({
+        path: `${path}.direction`,
+        message: 'Import or Export direction is required',
+      });
       return;
     }
-    seen.add(input.questionId);
+
+    // Historical assessments remain single-answer.
+    if (
+      answerMode === 'SINGLE' &&
+      input.direction
+    ) {
+      issues.push({
+        path: `${path}.direction`,
+        message: 'Direction is not allowed for a single-answer assessment',
+      });
+      return;
+    }
+
+    const key = answerKey(input);
+
+    if (seen.has(key)) {
+      issues.push({
+        path: `${path}.questionId`,
+        message: input.direction
+          ? `question ${input.questionId} (${input.direction}) appears twice in this batch`
+          : `question ${input.questionId} appears twice in this batch`,
+      });
+      return;
+    }
+
+    seen.add(key);
+
     const result = validateOne(question, input, path);
-    if ('issues' in result) issues.push(...result.issues);
-    else answers.push(result.answer);
+
+    if ('issues' in result) {
+      issues.push(...result.issues);
+    } else {
+      answers.push(result.answer);
+    }
   });
-  return issues.length > 0 ? { ok: false, issues } : { ok: true, answers };
+
+  return issues.length > 0
+    ? { ok: false, issues }
+    : { ok: true, answers };
 }
 
 /** Merge by question: an incoming answer replaces the stored one for the same question; the rest stay. */
-export function mergeAnswers(existing: readonly StoredAnswer[], incoming: readonly StoredAnswer[]): StoredAnswer[] {
-  const merged = new Map(existing.map((answer) => [answer.questionId, answer]));
-  for (const answer of incoming) merged.set(answer.questionId, answer);
+export function mergeAnswers(
+  existing: readonly StoredAnswer[],
+  incoming: readonly StoredAnswer[],
+): StoredAnswer[] {
+  const merged = new Map(
+    existing.map((answer) => [
+      answerKey(answer),
+      answer,
+    ]),
+  );
+
+  for (const answer of incoming) {
+    merged.set(answerKey(answer), answer);
+  }
+
   return [...merged.values()];
 }
 
@@ -349,12 +436,67 @@ export interface Readiness {
   complete: boolean;
 }
 
-/** Progress against the form: every active question must be answered (rating or NA). */
-export function readinessOf(form: AssessmentForm, answers: readonly StoredAnswer[]): Readiness {
-  const answered = new Set(answers.filter(isAnswered).map((answer) => answer.questionId));
+export function readinessOf(
+  form: AssessmentForm,
+  answers: readonly StoredAnswer[],
+  answerMode: AnswerMode = 'SINGLE',
+): Readiness {
   const questions = formQuestions(form);
-  const missing = questions.filter((question) => !answered.has(question.id)).map((question) => question.id);
-  return { answered: questions.length - missing.length, total: questions.length, missing, complete: missing.length === 0 };
+
+  // Existing assessments: one answer per question.
+  if (answerMode === 'SINGLE') {
+    const answered = new Set(
+      answers.filter(isAnswered).map((answer) => answer.questionId),
+    );
+
+    const missing = questions
+      .filter((question) => !answered.has(question.id))
+      .map((question) => question.id);
+
+    return {
+      answered: questions.length - missing.length,
+      total: questions.length,
+      missing,
+      complete: missing.length === 0,
+    };
+  }
+
+  // New assessments: separate Import and Export answers.
+  const answered = new Set(
+    answers
+      .filter(isAnswered)
+      .filter(
+        (answer) =>
+          answer.direction === 'IMPORT' ||
+          answer.direction === 'EXPORT',
+      )
+      .map(answerKey),
+  );
+
+  const directions = ['IMPORT', 'EXPORT'] as const;
+
+  const missing = questions.flatMap((question) =>
+    directions
+      .filter(
+        (direction) =>
+          !answered.has(
+            answerKey({
+              questionId: question.id,
+              direction,
+            }),
+          ),
+      )
+      .map((direction) => `${question.id}:${direction}`),
+  );
+
+  const total = questions.length * 2;
+
+  return {
+    answered: total - missing.length,
+    total,
+    missing,
+    complete: missing.length === 0,
+  };
 }
 
 export interface Progress {
@@ -374,4 +516,14 @@ export function ownScore(answers: readonly StoredAnswer[]): number | null {
   if (ratings.length === 0) return null;
   const mean = ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length;
   return Number(`${Math.round(Number(`${mean}e1`))}e-1`);
+}
+
+/** Calculate the existing assessment score for one direction only. */
+export function ownScoreByDirection(
+  answers: readonly StoredAnswer[],
+  direction: AnswerDirection,
+): number | null {
+  return ownScore(
+    answers.filter((answer) => answer.direction === direction),
+  );
 }

@@ -487,7 +487,7 @@ describe('history, masking, tenancy and export', () => {
       customerType: 'FF',
       customerId: customerB,
       assessorName: 'Dev Patel',
-      assessorEmailMasked: 'd***@bombayfreight.test',
+      assessorEmailMasked: 'dev@bombayfreight.test',
       assessor: { name: 'Dev Patel', email: 'dev@bombayfreight.test', revealed: true },
       status: 'SUBMITTED',
       progress: { answered: 4, total: 4, pct: 100 },
@@ -520,10 +520,10 @@ describe('history, masking, tenancy and export', () => {
     expect((mine.body.data as { operator: { code: string } }[]).every((r) => r.operator.code === 'ACO-B')).toBe(true);
     const customer = (mine.body.data as { kind: string; assessorName: string; assessorEmailMasked: string; customerId: string | null; assessor: { name: string; email: string | null; revealed: boolean } }[]).find((r) => r.kind === 'CUSTOMER')!;
     expect(customer).toMatchObject({
-      assessorName: 'D*** P***',
-      assessorEmailMasked: 'd***@bombayfreight.test',
+      assessorName: '********',
+      assessorEmailMasked: '********',
       customerId: null,
-      assessor: { name: 'D*** P***', email: 'd***@bombayfreight.test', revealed: false },
+      assessor: { name: '********', email: '********', revealed: false },
     });
     const self = (mine.body.data as { kind: string; assessorName: string; assessor: { revealed: boolean } }[]).find((r) => r.kind === 'SELF')!;
     expect(self).toMatchObject({ assessorName: adminB.user.name, assessor: { revealed: true } });
@@ -575,7 +575,7 @@ describe('history, masking, tenancy and export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.headers['content-disposition']).toContain('assessments-CSQ-2026-1.csv');
     const lines = res.text.trim().split('\n');
-    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp');
+    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp,answerMode,direction,importScore,exportScore');
     // Three SUBMITTED assessments: FF customer (4 questions) + SELF (5) of ACO-A, FF customer (4) of ACO-B.
     expect(lines).toHaveLength(1 + 4 + 5 + 4);
     expect(lines.find((line) => line.includes(submittedB) && line.includes('Q.REQ'))).toContain('Dev Patel,dev@bombayfreight.test,SUBMITTED');
@@ -584,7 +584,7 @@ describe('history, masking, tenancy and export', () => {
     const myLines = mine.text.trim().split('\n').slice(1);
     expect(myLines).toHaveLength(4 + 5);
     expect(myLines.every((line) => line.includes(',ACO-B,'))).toBe(true);
-    expect(myLines.find((line) => line.includes('Q.REQ') && line.includes('CUSTOMER'))).toContain('D*** P***,d***@bombayfreight.test');
+    expect(myLines.find((line) => line.includes('Q.REQ') && line.includes('CUSTOMER'))).toContain('********,********');
     expectError(await superAdmin.get('/api/v1/assessments/export'), 400, 'VALIDATION');
     expectError(await adminB.get(`/api/v1/assessments/export?cycleId=${idString(newId())}`), 404, 'NOT_FOUND');
   });

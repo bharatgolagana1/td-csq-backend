@@ -83,14 +83,20 @@ function rowsAtLevel(union: Map<string, NodeRef>, level: ScoreLevel, compared: r
     }));
 }
 
-async function loadCompared(ctx: RequestContext, acoId: string, cycleId: string, surveyType: SurveyType | undefined): Promise<ComparedCycle> {
+async function loadCompared(
+  ctx: RequestContext,
+  acoId: string,
+  cycleId: string,
+  surveyType: SurveyType | undefined,
+  direction: ComparisonQuery['direction'],
+): Promise<ComparedCycle> {
   const cycle = await loadCycle(ctx, cycleId);
   const participant = cycle ? await loadParticipant(cycle.id, acoId) : null;
   if (!cycle || !participant) throw new AppError('NOT_FOUND', `Operator did not take part in cycle ${cycleId}`);
   const type = surveyType ?? participant.surveyTypes[0];
   const surveyId = type ? cycle.surveyVersions[type] : undefined;
   const [scores, tree] = await Promise.all([
-    type && participant.surveyTypes.includes(type) ? loadScores(cycle.id, acoId, type) : { rows: [], distribution: [] },
+    type && participant.surveyTypes.includes(type) ? loadScores(cycle.id, acoId, type, direction ?? 'SINGLE') : { rows: [], distribution: [] },
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
   return { cycle, participant, rows: indexRows(scores.rows), tree };
@@ -98,16 +104,19 @@ async function loadCompared(ctx: RequestContext, acoId: string, cycleId: string,
 
 export async function comparisonReport(ctx: RequestContext, query: ComparisonQuery): Promise<ComparisonDto> {
   const operator = await requireVisibleOperator(ctx, query.acoId);
-  const first = await loadCompared(ctx, operator.id, query.cycleIds[0] ?? '', query.surveyType);
+  const first = await loadCompared(ctx, operator.id, query.cycleIds[0] ?? '', query.surveyType, query.direction);
   const surveyType = query.surveyType ?? first.participant.surveyTypes[0];
   if (!surveyType) throw new AppError('NOT_FOUND', 'Operator has nothing to assess in this cycle');
-  const rest = await Promise.all(query.cycleIds.slice(1).map((cycleId) => loadCompared(ctx, operator.id, cycleId, surveyType)));
+  const rest = await Promise.all(query.cycleIds.slice(1).map((cycleId) => loadCompared(ctx, operator.id, cycleId, surveyType, query.direction)));
   const compared = [first, ...rest];
 
   const union = new Map<string, NodeRef>();
   for (const { tree } of compared) collectNodes(union, tree);
 
   return {
+    ...(query.direction && query.direction !== 'SINGLE'
+      ? { direction: query.direction }
+      : {}),
     operator: operatorSummaryOf(operator, operator.airportId ? await loadAirport(operator.airportId) : null),
     surveyType,
     cycles: compared.map(({ cycle }) => ({ ...cycleSummaryOf(cycle), provisional: !isScored(cycle) })),

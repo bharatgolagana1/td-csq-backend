@@ -2,10 +2,11 @@ import { z } from 'zod';
 
 import { idSchema } from '../../core/ids.js';
 
-import { SCORE_LEVELS, SURVEY_TYPES } from './scores.model.js';
+import { SCORE_DIRECTIONS, SCORE_LEVELS, SURVEY_TYPES } from './scores.model.js';
 
 export const scoreLevelSchema = z.enum(SCORE_LEVELS);
 export const surveyTypeSchema = z.enum(SURVEY_TYPES);
+export const scoreDirectionSchema = z.enum(SCORE_DIRECTIONS);
 
 const meanWithN = z.object({ mean: z.number().nullable(), n: z.number() });
 
@@ -13,6 +14,7 @@ export const scoreRowResponse = z.object({
   level: scoreLevelSchema,
   /** Stable code of the node (question / subcategory / category code), or `OVERALL`. */
   refId: z.string(),
+  direction: scoreDirectionSchema.optional(),
   customer: meanWithN.extend({ naCount: z.number(), byType: z.object({ FF: meanWithN, CB: meanWithN }) }),
   self: meanWithN,
   suppressed: z.literal('INSUFFICIENT_RESPONSES').optional(),
@@ -38,6 +40,7 @@ export const scoreSetResponse = z.object({
   cycleId: z.string(),
   acoId: z.string(),
   surveyType: surveyTypeSchema,
+  direction: scoreDirectionSchema.optional(),
   /** Null until the cycle has been scored for this operator and type. */
   surveyId: z.string().nullable(),
   provisional: z.boolean().nullable(),
@@ -52,6 +55,7 @@ export const airportScoreResponse = z.object({
   cycleId: z.string(),
   airportId: z.string(),
   surveyType: surveyTypeSchema,
+  direction: scoreDirectionSchema.optional(),
   level: scoreLevelSchema,
   refId: z.string(),
   mean: z.number().nullable(),
@@ -68,6 +72,7 @@ export type AirportScoreDto = z.infer<typeof airportScoreResponse>;
 /** One line of the national table: airport ratings and ranks only, never an operator's figures (§7 "Confidentiality"). */
 export const nationalRowResponse = z.object({
   airportId: z.string(),
+  direction: scoreDirectionSchema.optional(),
   iata: z.string(),
   name: z.string(),
   mean: z.number().nullable(),

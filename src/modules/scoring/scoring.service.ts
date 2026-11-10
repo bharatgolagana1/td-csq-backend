@@ -25,6 +25,7 @@ import {
   rowKey,
   scoreAssessments,
   withPrevious,
+  selectForDirection,
   type AirportScore,
   type DistributionBucket,
   type PreviousCycleScores,
@@ -32,6 +33,7 @@ import {
   type ScoreRow,
   type ScoringSettings,
   type WithPrevious,
+  type ScoreDirection,
 } from './engine/index.js';
 import { ScoreModel, SURVEY_TYPES, type ResponseCounts, type ScoreDoc } from './scores.model.js';
 import type { AirportScoreDto, NationalRowDto, RunInput, RunSummaryDto, ScoreRowDto, ScoreSetDto } from './scoring.schemas.js';
@@ -64,6 +66,7 @@ type ScoredRow = ScoreRow & WithPrevious;
 
 interface OperatorResult {
   participant: ParticipantRef;
+  direction: ScoreDirection;
   rows: ScoredRow[];
   distribution: DistributionBucket[];
   counts: ResponseCounts;
@@ -73,6 +76,7 @@ interface OperatorResult {
 
 interface AirportResult {
   airportId: string;
+  direction: ScoreDirection;
   level: ScoreLevel;
   refId: string;
   order: number;
@@ -82,6 +86,17 @@ interface AirportResult {
 }
 
 const ZERO_COUNTS: ResponseCounts = { customer: 0, self: 0, FF: 0, CB: 0 };
+
+function mongoDirectionFilter(direction: ScoreDirection) {
+  return direction === 'SINGLE'
+    ? {
+        $or: [
+          { direction: 'SINGLE' },
+          { direction: { $exists: false } },
+        ],
+      }
+    : { direction };
+}
 
 // --- the run -----------------------------------------------------------------
 
@@ -108,11 +123,35 @@ function toEngineRow(doc: ScoreDoc): ScoreRow {
   return row;
 }
 
-/** The operator's rows in the previous cycle (already keyed by code), or null when it did not take part. */
-async function loadPreviousRows(previousCycleId: Types.ObjectId, acoId: string, surveyType: SurveyType): Promise<PreviousCycleScores | null> {
-  const docs = await ScoreModel.find({ cycleId: previousCycleId, acoId: toId(acoId, 'acoId'), surveyType }).lean<ScoreDoc[]>();
+async function loadPreviousRows(
+  previousCycleId: Types.ObjectId,
+  acoId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection,
+): Promise<PreviousCycleScores | null> {
+  const directionFilter =
+    direction === 'SINGLE'
+      ? {
+          $or: [
+            { direction: 'SINGLE' },
+            { direction: { $exists: false } },
+          ],
+        }
+      : { direction };
+
+  const docs = await ScoreModel.find({
+    cycleId: previousCycleId,
+    acoId: toId(acoId, 'acoId'),
+    surveyType,
+    ...directionFilter,
+  }).lean<ScoreDoc[]>();
+
   if (docs.length === 0) return null;
-  return { cycleId: idString(previousCycleId), rows: docs.map(toEngineRow) };
+
+  return {
+    cycleId: idString(previousCycleId),
+    rows: docs.map(toEngineRow),
+  };
 }
 
 /**
@@ -128,17 +167,68 @@ async function scoreOperator(
   settings: ScoringSettings,
   previous: CycleDoc | null,
   participant: ParticipantRef,
+  direction: ScoreDirection = 'SINGLE',
 ): Promise<Omit<OperatorResult, 'rank' | 'rankOf'>> {
-  const { assessments, counts } = await loadSubmitted(cycleId, participant.acoId, surveyType);
-  const byCode = scoreAssessments(survey.structure, assessments, settings).map((row) => ({
+  const submitted = await loadSubmitted(
+    cycleId,
+    participant.acoId,
+    surveyType,
+  );
+
+  const assessments = selectForDirection(
+    submitted.assessments,
+    direction,
+  );
+
+  const counts: ResponseCounts = {
+    customer: 0,
+    self: 0,
+    FF: 0,
+    CB: 0,
+  };
+
+  for (const assessment of assessments) {
+    if (assessment.kind === 'SELF') {
+      counts.self += 1;
+    } else {
+      counts.customer += 1;
+
+      if (assessment.customerType === 'FF') {
+        counts.FF += 1;
+      }
+
+      if (assessment.customerType === 'CB') {
+        counts.CB += 1;
+      }
+    }
+  }
+
+  const byCode = scoreAssessments(
+    survey.structure,
+    assessments,
+    settings,
+  ).map((row) => ({
     ...row,
     refId: survey.codeOf.get(row.refId) ?? row.refId,
   }));
-  const previousRows = previous ? await loadPreviousRows(previous._id, participant.acoId, surveyType) : null;
+
+  const previousRows = previous
+    ? await loadPreviousRows(
+        previous._id,
+        participant.acoId,
+        surveyType,
+        direction,
+      )
+    : null;
+
   return {
     participant,
+    direction,
     rows: withPrevious(byCode, previousRows),
-    distribution: feedbackDistribution(assessments, survey.activeQuestionIds),
+    distribution: feedbackDistribution(
+      assessments,
+      survey.activeQuestionIds,
+    ),
     counts,
   };
 }
@@ -155,14 +245,32 @@ async function persistOperator(
   const cycleId = cycle._id;
   const acoId = toId(result.participant.acoId, 'acoId');
   const airportId = toId(result.participant.airportId, 'airportId');
+  const directionFilter =
+    result.direction === 'SINGLE'
+      ? {
+          $or: [
+            { direction: 'SINGLE' },
+            { direction: { $exists: false } },
+          ],
+        }
+      : { direction: result.direction };
+
   const operations: AnyBulkWriteOperation<ScoreDoc>[] = result.rows.map((row, order) => {
     const overall = row.level === 'OVERALL';
     return {
       updateOne: {
-        filter: { cycleId, acoId, surveyType, level: row.level, refId: row.refId },
+        filter: {
+          cycleId,
+          acoId,
+          surveyType,
+          ...directionFilter,
+          level: row.level,
+          refId: row.refId,
+        },
         update: {
           $set: {
             airportId,
+            direction: result.direction,
             surveyId,
             order,
             customer: row.customer,
@@ -185,7 +293,16 @@ async function persistOperator(
   await withTransaction(async (session) => {
     await ScoreModel.bulkWrite(operations, { session });
     await ScoreModel.deleteMany(
-      { cycleId, acoId, surveyType, $nor: result.rows.map((row) => ({ level: row.level, refId: row.refId })) },
+      {
+        cycleId,
+        acoId,
+        surveyType,
+        ...directionFilter,
+        $nor: result.rows.map((row) => ({
+          level: row.level,
+          refId: row.refId,
+        })),
+      },
       { session },
     );
   });
@@ -197,15 +314,34 @@ async function persistOperator(
  * weights when the airport has none), then airports ranked per level and ref.
  */
 function rollupAirports(results: readonly OperatorResult[], snapshots: ReadonlyMap<string, ReadonlyMap<string, number> | null>): AirportResult[] {
-  const byAirport = new Map<string, OperatorResult[]>();
+  const byAirport = new Map<
+    string,
+    {
+      airportId: string;
+      direction: ScoreDirection;
+      operators: OperatorResult[];
+    }
+  >();
+
   for (const result of results) {
-    const group = byAirport.get(result.participant.airportId);
-    if (group) group.push(result);
-    else byAirport.set(result.participant.airportId, [result]);
+    const airportId = result.participant.airportId;
+    const direction = result.direction;
+    const key = `${airportId}:${direction}`;
+    const group = byAirport.get(key);
+
+    if (group) {
+      group.operators.push(result);
+    } else {
+      byAirport.set(key, {
+        airportId,
+        direction,
+        operators: [result],
+      });
+    }
   }
 
   const out: AirportResult[] = [];
-  for (const [airportId, operators] of byAirport) {
+  for (const { airportId, direction, operators } of byAirport.values()) {
     const snapshot = snapshots.get(airportId) ?? null;
     const refs = new Map<string, { level: ScoreLevel; refId: string; order: number }>();
     const rowsByOperator = operators.map((operator) => {
@@ -223,13 +359,20 @@ function rollupAirports(results: readonly OperatorResult[], snapshots: ReadonlyM
         mean: rowsByOperator[i]?.get(key)?.customer.mean ?? null,
         sharePct: snapshot?.get(operator.participant.acoId) ?? null,
       }));
-      out.push({ airportId, ...ref, figure: rollupAirport(inputs), rank: null, rankOf: 0 });
+      out.push({
+        airportId,
+        direction,
+        ...ref,
+        figure: rollupAirport(inputs),
+        rank: null,
+        rankOf: 0,
+      });
     }
   }
 
   const byRef = new Map<string, AirportResult[]>();
   for (const result of out) {
-    const key = `${result.level}:${result.refId}`;
+    const key = `${result.direction}:${result.level}:${result.refId}`;
     const group = byRef.get(key);
     if (group) group.push(result);
     else byRef.set(key, [result]);
@@ -254,14 +397,40 @@ async function persistAirport(
   results: readonly AirportResult[],
   provisional: boolean,
   computedAt: Date,
+  direction: ScoreDirection = 'SINGLE',
 ): Promise<void> {
   const cycleId = cycle._id;
   const airportOid = toId(airportId, 'airportId');
+  if (results.some((result) => result.direction !== direction)) {
+    throw new AppError(
+      'INTERNAL',
+      'Airport score direction mismatch',
+    );
+  }
+
+  const directionFilter =
+    direction === 'SINGLE'
+      ? {
+          $or: [
+            { direction: 'SINGLE' },
+            { direction: { $exists: false } },
+          ],
+        }
+      : { direction };
+
   const operations: AnyBulkWriteOperation<AirportScoreDoc>[] = results.map((result) => ({
     updateOne: {
-      filter: { cycleId, airportId: airportOid, surveyType, level: result.level, refId: result.refId },
+      filter: {
+        cycleId,
+        airportId: airportOid,
+        surveyType,
+        ...directionFilter,
+        level: result.level,
+        refId: result.refId,
+      },
       update: {
         $set: {
+          direction,
           order: result.order,
           mean: result.figure.mean,
           marketShareApplied: result.figure.marketShareApplied,
@@ -282,9 +451,20 @@ async function persistAirport(
     },
   }));
   await withTransaction(async (session) => {
-    await AirportScoreModel.bulkWrite(operations, { session });
+    if (operations.length > 0) {
+      await AirportScoreModel.bulkWrite(operations, { session });
+    }
     await AirportScoreModel.deleteMany(
-      { cycleId, airportId: airportOid, surveyType, $nor: results.map((result) => ({ level: result.level, refId: result.refId })) },
+      {
+        cycleId,
+        airportId: airportOid,
+        surveyType,
+        ...directionFilter,
+        $nor: results.map((result) => ({
+          level: result.level,
+          refId: result.refId,
+        })),
+      },
       { session },
     );
   });
@@ -324,28 +504,120 @@ export async function runCycle(cycleId: string, options: RunOptions): Promise<Ru
     const [survey, previous] = await Promise.all([loadSurvey(surveyId), findPreviousScoredCycle(cycle, surveyType)]);
     const members = participants.filter((participant) => participant.surveyTypes.includes(surveyType));
 
-    const scored: Omit<OperatorResult, 'rank' | 'rankOf'>[] = [];
-    for (const member of members) scored.push(await scoreOperator(cycleId, surveyType, survey, settings, previous, member));
-    const ranked = rankOperators(scored.map((result) => ({ acoId: result.participant.acoId, mean: overallMean(result.rows) })));
-    const results: OperatorResult[] = scored.map((result, i) => ({ ...result, rank: ranked[i]?.rank ?? null, rankOf: ranked[i]?.rankOf ?? 0 }));
+    const directions = new Set<ScoreDirection>();
+
+    // Detect the actual answer modes submitted in this cycle.
+    for (const member of members) {
+      const { assessments } = await loadSubmitted(
+        cycleId,
+        member.acoId,
+        surveyType,
+      );
+
+      for (const assessment of assessments) {
+        if (assessment.answerMode === 'IMPORT_EXPORT') {
+          directions.add('IMPORT');
+          directions.add('EXPORT');
+        } else {
+          directions.add('SINGLE');
+        }
+      }
+    }
+
+    // Preserve existing behavior for cycles without submissions.
+    if (directions.size === 0) {
+      directions.add('SINGLE');
+    }
+
+    const results: OperatorResult[] = [];
+
+    // Calculate and rank each direction independently.
+    for (const direction of directions) {
+      const scored: Omit<OperatorResult, 'rank' | 'rankOf'>[] = [];
+
+      for (const member of members) {
+        scored.push(
+          await scoreOperator(
+            cycleId,
+            surveyType,
+            survey,
+            settings,
+            previous,
+            member,
+            direction,
+          ),
+        );
+      }
+
+      const ranked = rankOperators(
+        scored.map((result) => ({
+          acoId: result.participant.acoId,
+          mean: overallMean(result.rows),
+        })),
+      );
+
+      results.push(
+        ...scored.map((result, index) => ({
+          ...result,
+          rank: ranked[index]?.rank ?? null,
+          rankOf: ranked[index]?.rankOf ?? 0,
+        })),
+      );
+    }
+
+    // Persist independent operator scores.
     for (const result of results) {
       await persistOperator(cycle, surveyType, surveyId, result, provisional, computedAt);
       operatorsScored.add(result.participant.acoId);
       rows += result.rows.length;
     }
-    await ScoreModel.deleteMany({ cycleId: cycle._id, surveyType, acoId: { $nin: members.map((member) => toId(member.acoId, 'acoId')) } });
 
+    // Remove operators no longer participating.
+    await ScoreModel.deleteMany({
+      cycleId: cycle._id,
+      surveyType,
+      acoId: {
+        $nin: members.map((member) => toId(member.acoId, 'acoId')),
+      },
+    });
+
+    // Calculate airport results independently.
     const airportIds = [...new Set(members.map((member) => member.airportId))];
-    const snapshots = new Map(await Promise.all(airportIds.map(async (airportId) => [airportId, await loadShareSnapshot(cycleId, airportId)] as const)));
+    const snapshots = new Map(await Promise.all(airportIds.map(async (airportId) => [airportId, await loadShareSnapshot(cycleId, airportId),] as const)));
     const airportResults = rollupAirports(results, snapshots);
+
+    // Save each airport and direction separately.
     for (const airportId of airportIds) {
-      const own = airportResults.filter((result) => result.airportId === airportId);
-      if (own.length === 0) continue;
-      await persistAirport(cycle, surveyType, airportId, own, provisional, computedAt);
-      airportsScored.add(airportId);
-      airportRows += own.length;
+      for (const direction of directions) {
+        const own = airportResults.filter(
+          (result) =>
+            result.airportId === airportId &&
+            result.direction === direction,
+        );
+
+        await persistAirport(
+          cycle,
+          surveyType,
+          airportId,
+          own,
+          provisional,
+          computedAt,
+          direction,
+        );
+
+        airportsScored.add(airportId);
+        airportRows += own.length;
+      }
     }
-    await AirportScoreModel.deleteMany({ cycleId: cycle._id, surveyType, airportId: { $nin: airportIds.map((id) => toId(id, 'airportId')) } });
+
+    // Remove airports no longer participating.
+    await AirportScoreModel.deleteMany({
+      cycleId: cycle._id,
+      surveyType,
+      airportId: {
+        $nin: airportIds.map((id) => toId(id, 'airportId')),
+      },
+    });
   }
   await Promise.all([
     ScoreModel.deleteMany({ cycleId: cycle._id, surveyType: { $nin: surveyTypes } }),
@@ -391,6 +663,9 @@ export async function runCycleForRequest(ctx: RequestContext, cycleId: string, i
 
 function toRowDto(doc: ScoreDoc): ScoreRowDto {
   const row: ScoreRowDto = {
+    ...(doc.direction && doc.direction !== 'SINGLE'
+      ? { direction: doc.direction }
+      : {}),
     level: doc.level,
     refId: doc.refId,
     customer: {
@@ -419,8 +694,18 @@ function toRowDto(doc: ScoreDoc): ScoreRowDto {
  * first), with the feedback distribution and the response counts of the run.
  * Empty rows, zero counts and `computedAt: null` when nothing has been scored.
  */
-export async function getScores(cycleId: string, acoId: string, surveyType: SurveyType): Promise<ScoreSetDto> {
-  const docs = await ScoreModel.find({ cycleId: toId(cycleId, 'cycleId'), acoId: toId(acoId, 'acoId'), surveyType })
+export async function getScores(
+  cycleId: string,
+  acoId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<ScoreSetDto> {
+  const docs = await ScoreModel.find({
+    cycleId: toId(cycleId, 'cycleId'),
+    acoId: toId(acoId, 'acoId'),
+    surveyType,
+    ...mongoDirectionFilter(direction),
+  })
     .sort({ order: 1 })
     .lean<ScoreDoc[]>();
   const overall = docs.find((doc) => doc.level === 'OVERALL');
@@ -428,6 +713,7 @@ export async function getScores(cycleId: string, acoId: string, surveyType: Surv
     cycleId,
     acoId,
     surveyType,
+    ...(direction !== 'SINGLE' ? { direction } : {}),
     surveyId: overall?.surveyId ?? null,
     provisional: overall?.provisional ?? null,
     computedAt: overall?.computedAt.toISOString() ?? null,
@@ -439,6 +725,9 @@ export async function getScores(cycleId: string, acoId: string, surveyType: Surv
 
 function toAirportDto(doc: AirportScoreDoc): AirportScoreDto {
   return {
+    ...(doc.direction && doc.direction !== 'SINGLE'
+      ? { direction: doc.direction }
+      : {}),
     cycleId: idString(doc.cycleId),
     airportId: idString(doc.airportId),
     surveyType: doc.surveyType,
@@ -461,8 +750,16 @@ function toAirportDto(doc: AirportScoreDoc): AirportScoreDto {
 }
 
 /** Contract: every airport row of the cycle (both survey types), in survey type then tree order. */
-export async function getAirportScores(cycleId: string, airportId: string): Promise<AirportScoreDto[]> {
-  const docs = await AirportScoreModel.find({ cycleId: toId(cycleId, 'cycleId'), airportId: toId(airportId, 'airportId') })
+export async function getAirportScores(
+  cycleId: string,
+  airportId: string,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<AirportScoreDto[]> {
+  const docs = await AirportScoreModel.find({
+    cycleId: toId(cycleId, 'cycleId'),
+    airportId: toId(airportId, 'airportId'),
+    ...mongoDirectionFilter(direction),
+  })
     .sort({ surveyType: 1, order: 1 })
     .lean<AirportScoreDoc[]>();
   return docs.map(toAirportDto);
@@ -473,10 +770,18 @@ export async function getAirportScores(cycleId: string, airportId: string): Prom
  * survey type, best first (unscored last, by IATA). Carries airport ratings
  * and ranks only — never an operator's figures — so an ACO may see it as-is.
  */
-export async function nationalTable(cycleId: string, surveyType: SurveyType): Promise<NationalRowDto[]> {
-  const docs = await AirportScoreModel.find({ cycleId: toId(cycleId, 'cycleId'), surveyType, level: 'OVERALL', refId: OVERALL_REF_ID }).lean<
-    AirportScoreDoc[]
-  >();
+export async function nationalTable(
+  cycleId: string,
+  surveyType: SurveyType,
+  direction: ScoreDirection = 'SINGLE',
+): Promise<NationalRowDto[]> {
+  const docs = await AirportScoreModel.find({
+    cycleId: toId(cycleId, 'cycleId'),
+    surveyType,
+    level: 'OVERALL',
+    refId: OVERALL_REF_ID,
+    ...mongoDirectionFilter(direction),
+  }).lean<AirportScoreDoc[]>();
   const airports = await loadAirports(docs.map((doc) => doc.airportId));
   return docs
     .map((doc): NationalRowDto => {
@@ -484,6 +789,7 @@ export async function nationalTable(cycleId: string, surveyType: SurveyType): Pr
       const airport = airports.get(airportId);
       return {
         airportId,
+        ...(direction !== 'SINGLE' ? { direction } : {}),
         iata: airport?.iata ?? '?',
         name: airport?.name ?? 'Unknown airport',
         mean: doc.mean,

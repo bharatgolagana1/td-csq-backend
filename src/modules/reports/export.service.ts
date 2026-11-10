@@ -55,7 +55,13 @@ async function operatorCsv(ctx: RequestContext, query: ExportQuery): Promise<Csv
   }
   for (const question of questions.questions) rows.push({ ...figuresRow('QUESTION', { ...question, name: question.text }), comments: question.comments });
   return {
-    fileName: csvFileName('operator', report.operator.code, report.cycle.code, report.surveyType),
+    fileName: csvFileName(
+      'operator',
+      report.operator.code,
+      report.cycle.code,
+      report.surveyType,
+      ...(query.direction && query.direction !== 'SINGLE' ? [query.direction] : []),
+    ),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(OPERATOR_COLUMNS, rows),
   };
@@ -122,7 +128,13 @@ async function airportCsv(ctx: RequestContext, query: ExportQuery): Promise<CsvE
     })),
   ];
   return {
-    fileName: csvFileName('airport', report.airport.iata, report.cycle.code, report.surveyType),
+    fileName: csvFileName(
+      'airport',
+      report.airport.iata,
+      report.cycle.code,
+      report.surveyType,
+      ...(query.direction && query.direction !== 'SINGLE' ? [query.direction] : []),
+    ),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(AIRPORT_COLUMNS, rows),
   };
@@ -167,7 +179,12 @@ async function nationalCsv(ctx: RequestContext, query: ExportQuery): Promise<Csv
     })),
   ];
   return {
-    fileName: csvFileName('national', report.cycle.code, report.surveyType),
+    fileName: csvFileName(
+      'national',
+      report.cycle.code,
+      report.surveyType,
+      ...(query.direction && query.direction !== 'SINGLE' ? [query.direction] : []),
+    ),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(NATIONAL_COLUMNS, rows),
   };

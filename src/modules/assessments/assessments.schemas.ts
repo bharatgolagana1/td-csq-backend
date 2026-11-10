@@ -4,7 +4,7 @@ import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
 
 import { COMMENT_MODES, SURVEY_STATUSES } from './assessments.form.js';
-import { ASSESSMENT_KINDS, ASSESSMENT_STATUSES, CUSTOMER_TYPES, SURVEY_TYPES } from './assessments.model.js';
+import { ANSWER_DIRECTIONS, ANSWER_MODES, ASSESSMENT_KINDS, ASSESSMENT_STATUSES, CUSTOMER_TYPES, SURVEY_TYPES } from './assessments.model.js';
 
 export const ratingSchema = z.number().int().min(1).max(5);
 
@@ -17,6 +17,7 @@ export type ProgressDto = z.infer<typeof progressResponse>;
 
 export const answerResponse = z.object({
   questionId: z.string(),
+  direction: z.enum(ANSWER_DIRECTIONS).nullable().optional(),
   rating: ratingSchema.nullable(),
   na: z.boolean(),
   comment: z.string().nullable(),
@@ -33,6 +34,7 @@ export const assessmentResponse = z.object({
   surveyId: z.string(),
   surveyType: z.enum(SURVEY_TYPES),
   kind: z.enum(ASSESSMENT_KINDS),
+  answerMode: z.enum(ANSWER_MODES).optional(),
   customerType: z.enum(CUSTOMER_TYPES).nullable(),
   invitationId: z.string().nullable(),
   userId: z.string().nullable(),
@@ -120,6 +122,7 @@ export type DraftDto = z.infer<typeof draftResponse>;
 export const answerInputSchema = z
   .object({
     questionId: z.string().trim().min(1).max(64),
+    direction: z.enum(ANSWER_DIRECTIONS).optional(),
     rating: ratingSchema.nullable().optional(),
     na: z.boolean().optional(),
     comment: z.string().trim().max(2000).nullable().optional(),
@@ -180,6 +183,8 @@ export const historyRowResponse = z.object({
   submittedAt: z.string().nullable(),
   /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated. */
   score: z.number().nullable(),
+  importScore: z.number().nullable(),
+  exportScore: z.number().nullable(),
 });
 export type HistoryRowDto = z.infer<typeof historyRowResponse>;
 
@@ -200,8 +205,8 @@ export const detailAnswerResponse = answerResponse.extend({
   subcategory: z.object({ id: z.string(), code: z.string(), name: z.string() }).nullable(),
 });
 
-/** `GET /assessments/:id`: the read-only return, every form question with its answer. */
 export const assessmentDetailResponse = historyRowResponse.extend({
+  answerMode: z.enum(ANSWER_MODES),
   survey: formSurveyResponse,
   answers: z.array(detailAnswerResponse),
 });

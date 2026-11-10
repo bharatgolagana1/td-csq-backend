@@ -51,6 +51,7 @@ import {
 const EMPTY_TREE: SurveyTreeView = { id: '', categories: [] };
 
 interface OperatorReportInputs {
+  direction: 'SINGLE' | 'IMPORT' | 'EXPORT';
   operator: OperatorView;
   selection: OperatorSelection;
   scores: ScoreSetView;
@@ -64,10 +65,22 @@ async function loadOperatorInputs(ctx: RequestContext, acoId: string, query: Ope
   const selection = await selectOperatorCycle(ctx, acoId, query);
   const surveyId = selection.cycle.surveyVersions[selection.surveyType];
   const [scores, tree] = await Promise.all([
-    loadScores(selection.cycle.id, acoId, selection.surveyType),
+    loadScores(
+      selection.cycle.id,
+      acoId,
+      selection.surveyType,
+      query.direction ?? 'SINGLE',
+    ),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
-  return { operator, selection, scores, rows: indexRows(scores.rows), tree };
+  return {
+    operator,
+    selection,
+    direction: query.direction ?? 'SINGLE',
+    scores,
+    rows: indexRows(scores.rows),
+    tree,
+  };
 }
 
 function byOrder<T extends { order: number }>(nodes: readonly T[]): T[] {
@@ -111,8 +124,13 @@ function distributionOf(scores: ScoreSetView): OperatorReportDto['feedbackDistri
 }
 
 /** The scoring module's national table, best first, with the operator's own airport flagged. */
-async function nationalTableOf(cycleId: string, surveyType: SurveyType, ownAirportId: string | null): Promise<NationalTableRowDto[]> {
-  const rows = await loadNationalTable(cycleId, surveyType);
+async function nationalTableOf(
+  cycleId: string,
+  surveyType: SurveyType,
+  ownAirportId: string | null,
+  direction: OperatorReportQuery['direction'],
+): Promise<NationalTableRowDto[]> {
+  const rows = await loadNationalTable(cycleId, surveyType, direction ?? 'SINGLE');
   return rows
     .map((row) => ({
       airportIata: row.iata,
@@ -135,7 +153,7 @@ async function comparisonOf(
   if (!overall?.previous) return { current, previous: null };
   const [previousCycle, previousScores] = await Promise.all([
     loadCycle(ctx, overall.previous.cycleId),
-    loadScores(overall.previous.cycleId, inputs.operator.id, surveyType),
+    loadScores(overall.previous.cycleId, inputs.operator.id, surveyType, inputs.direction),
   ]);
   const previousOverall = rowAt(indexRows(previousScores.rows), 'OVERALL', OVERALL_REF_ID);
   return {
@@ -157,13 +175,16 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
 
   const [airport, nationalTable, comparison, assessments, airportsTotal] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    nationalTableOf(cycle.id, surveyType, operator.airportId),
+    nationalTableOf(cycle.id, surveyType, operator.airportId, query.direction),
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
     countActiveAirports(),
   ]);
 
   return {
+    ...(query.direction && query.direction !== 'SINGLE'
+      ? { direction: query.direction }
+      : {}),
     cycle: cycleSummaryOf(cycle),
     surveyType,
     provisional,
@@ -242,9 +263,12 @@ export async function operatorQuestions(ctx: RequestContext, acoId: string, quer
   const { cycle, surveyType, provisional } = selection;
   const [airport, assessments] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    loadSubmittedCustomerAssessments(cycle.id, operator.id, surveyType),
+    loadSubmittedCustomerAssessments(cycle.id, operator.id, surveyType, query.direction ?? 'SINGLE'),
   ]);
   return {
+    ...(query.direction && query.direction !== 'SINGLE'
+      ? { direction: query.direction }
+      : {}),
     cycle: cycleSummaryOf(cycle),
     surveyType,
     provisional,
