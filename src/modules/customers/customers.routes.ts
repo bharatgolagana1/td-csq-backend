@@ -146,13 +146,8 @@ export const customersRoutes = [
     method: 'delete',
     path: '/:id',
     policy: { kind: 'task', task: 'customers.delete' },
-    summary: 'Soft-delete a customer from the operator directory',
+    summary: 'Delete a customer from the directory (soft; 412 while it is in a locked sample of a running cycle)',
     params: customerParams,
-    response: z.object({
-      id: z.string(),
-      deletedAt: z.string(),
-    }),
-    handler: ({ ctx, params }) =>
-      deleteCustomer(ctx, params.id),
+    handler: ({ ctx, params }) => deleteCustomer(ctx, params.id),
   }),
 ];

@@ -1,7 +1,9 @@
 import type { ClientSession, FilterQuery, Types } from 'mongoose';
 
 import type { RequestContext } from '../../core/auth/session.js';
+import { withTransaction } from '../../core/db.js';
 import { AppError } from '../../core/errors.js';
+import { emit, EventHandlerError } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { escapeRegex, pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
@@ -37,7 +39,8 @@ export function toCustomerDto(doc: CustomerDoc): CustomerDto {
 const SORTABLE = ['name', 'contactPerson', 'email', 'type', 'surveyType', 'status', 'createdAt', 'updatedAt'] as const;
 
 export async function listCustomers(ctx: RequestContext, query: CustomerListQuery): Promise<Page<CustomerDto>> {
-  const requested: FilterQuery<CustomerDoc> = {deletedAt: null,};
+  // A deleted customer is gone from the directory; its history stays.
+  const requested: FilterQuery<CustomerDoc> = { deletedAt: null };
   if (query.type) requested.type = query.type;
   if (query.surveyType) requested.surveyType = query.surveyType;
   if (query.status) requested.status = query.status;
@@ -57,7 +60,7 @@ export async function listCustomers(ctx: RequestContext, query: CustomerListQuer
 }
 
 async function requireVisibleCustomer(ctx: RequestContext, id: string): Promise<CustomerDoc> {
-  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx), { _id: toId(id), deletedAt: null, })).lean<CustomerDoc>();
+  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx), { _id: toId(id), deletedAt: null })).lean<CustomerDoc>();
   if (!doc) throw new AppError('NOT_FOUND', 'Customer not found');
   return doc;
 }
@@ -109,68 +112,9 @@ async function assertEmailFree(acoId: Types.ObjectId, email: string, except?: Ty
 
 export async function createCustomer(ctx: RequestContext, input: CreateCustomerInput): Promise<CustomerDto> {
   const target = await requireAcoTarget(ctx, input.acoId);
-  const contactPerson =
-    input.contactPerson === undefined || input.contactPerson === ''
-      ? input.name
-      : input.contactPerson;
-
-  // NEW: Check for a previously deleted customer.
-  const existing = await CustomerModel.findOne({
-    acoId: target.acoId,
-    email: input.email,
-  }).lean<CustomerDoc>();
-
-  // NEW: Restore the deleted customer instead of creating a duplicate.
-  if (existing?.deletedAt) {
-    const restored = await CustomerModel.findOneAndUpdate(
-      {
-        _id: existing._id,
-        acoId: target.acoId,
-        deletedAt: existing.deletedAt,
-      },
-      {
-        $set: {
-          airportId: target.airportId,
-          name: input.name,
-          contactPerson,
-          phone: input.phone,
-          type: input.type,
-          surveyType: input.surveyType,
-          tags: input.tags ?? [],
-          deletedAt: null,
-        },
-      },
-      { new: true },
-    ).lean<CustomerDoc | null>();
-
-    if (!restored) {
-      throw new AppError(
-        'CONFLICT',
-        'Customer was modified while being restored. Please try again.',
-      );
-    }
-
-    const dto = toCustomerDto(restored);
-
-    await audit(ctx, {
-      action: 'customer.updated',
-      entity: 'customer',
-      entityId: dto.id,
-      before: {
-        ...toCustomerDto(existing),
-        deletedAt: existing.deletedAt.toISOString(),
-      },
-      after: {
-        ...dto,
-        deletedAt: null,
-      },
-      orgId: dto.acoId,
-    });
-
-    return dto;
-  }
-
-  // Keep the existing duplicate-email validation.
+  const contactPerson = input.contactPerson === undefined || input.contactPerson === '' ? input.name : input.contactPerson;
+  const deleted = await CustomerModel.findOne({ acoId: target.acoId, email: input.email, deletedAt: { $ne: null } }).lean<CustomerDoc>();
+  if (deleted) return restoreCustomer(ctx, deleted, { ...input, contactPerson, airportId: target.airportId });
   await assertEmailFree(target.acoId, input.email);
   const created = (
     await CustomerModel.create({
@@ -190,6 +134,39 @@ export async function createCustomer(ctx: RequestContext, input: CreateCustomerI
   ).toObject();
   const dto = toCustomerDto(created);
   await audit(ctx, { action: 'customer.created', entity: 'customer', entityId: dto.id, after: dto, orgId: dto.acoId });
+  return dto;
+}
+
+/**
+ * Adding an e-mail that belongs to a deleted customer brings that customer
+ * back (the e-mail is unique per operator) with the new details, ACTIVE, and
+ * its sampling history intact.
+ */
+async function restoreCustomer(
+  ctx: RequestContext,
+  deleted: CustomerDoc,
+  input: CreateCustomerInput & { contactPerson: string; airportId: Types.ObjectId },
+): Promise<CustomerDto> {
+  const restored = await CustomerModel.findOneAndUpdate(
+    { _id: deleted._id, deletedAt: deleted.deletedAt },
+    {
+      $set: {
+        airportId: input.airportId,
+        name: input.name,
+        contactPerson: input.contactPerson,
+        phone: input.phone,
+        type: input.type,
+        surveyType: input.surveyType,
+        tags: input.tags ?? [],
+        status: 'ACTIVE',
+        deletedAt: null,
+      },
+    },
+    { new: true },
+  ).lean<CustomerDoc>();
+  if (!restored) throw new AppError('CONFLICT', 'The customer changed while it was being restored; try again');
+  const dto = toCustomerDto(restored);
+  await audit(ctx, { action: 'customer.restored', entity: 'customer', entityId: dto.id, before: toCustomerDto(deleted), after: dto, orgId: dto.acoId });
   return dto;
 }
 
@@ -250,58 +227,50 @@ export async function reactivateCustomer(ctx: RequestContext, id: string): Promi
   return dto;
 }
 
-export async function deleteCustomer(
-  ctx: RequestContext,
-  id: string,
-): Promise<{ id: string; deletedAt: string }> {
+/**
+ * Soft delete: the customer leaves the directory, the eligible list and the
+ * counters, but its samples, invitations and assessments keep pointing at it.
+ * Sampling hears `customer.deleted` inside the transaction: it drops the
+ * customer from selections that are not locked yet and refuses (rolling the
+ * delete back) while the customer is in a locked sample of a running cycle.
+ */
+export async function deleteCustomer(ctx: RequestContext, id: string): Promise<void> {
   const before = await requireVisibleCustomer(ctx, id);
-  const now = new Date();
-
-  const updated = await CustomerModel.findOneAndUpdate(
-    {
-      _id: before._id,
-      acoId: before.acoId,
-      deletedAt: null,
-    },
-    {
-      $set: { deletedAt: now },
-    },
-    { new: true },
-  ).lean<CustomerDoc | null>();
-
-  if (!updated) {
-    throw new AppError(
-      'PRECONDITION_FAILED',
-      'Customer has already been deleted',
-    );
-  }
-
+  const deletedAt = new Date();
+  await withTransaction(async (session) => {
+    const result = await CustomerModel.updateOne({ _id: before._id, deletedAt: null }, { $set: { deletedAt } }, { session });
+    if (result.modifiedCount === 0) throw new AppError('NOT_FOUND', 'Customer not found');
+    try {
+      await emit('customer.deleted', { acoId: idString(before.acoId), customerId: idString(before._id) }, { ctx, session });
+    } catch (error) {
+      // A listener's refusal reaches the caller as itself (e.g. sampling's 412).
+      if (error instanceof EventHandlerError && error.cause instanceof AppError) throw error.cause;
+      throw error;
+    }
+  });
   await audit(ctx, {
     action: 'customer.deleted',
     entity: 'customer',
-    entityId: idString(updated._id),
-    before: {
-      name: before.name,
-      status: before.status,
-      deletedAt: before.deletedAt ?? null,
-    },
-    after: {
-      deletedAt: now.toISOString(),
-    },
-    orgId: idString(updated.acoId),
+    entityId: idString(before._id),
+    before: toCustomerDto(before),
+    after: { deletedAt: deletedAt.toISOString() },
+    orgId: idString(before.acoId),
   });
-
-  return {
-    id: idString(updated._id),
-    deletedAt: now.toISOString(),
-  };
 }
 
 // --- exported to higher modules (WAVE1-BRIEF §2) -----------------------------
 
-/** A customer of the operator, whatever its status; another operator's id is NOT_FOUND. */
-export async function getCustomer(acoId: string, id: string): Promise<CustomerDto> {
-  const doc = await CustomerModel.findOne({ _id: toId(id), acoId: toId(acoId, 'acoId') }).lean<CustomerDoc>();
+/**
+ * A customer of the operator, whatever its status; another operator's id is
+ * NOT_FOUND, and so is a deleted customer unless `includeDeleted` (history:
+ * who answered an assessment stays known after the customer is deleted).
+ */
+export async function getCustomer(acoId: string, id: string, options: { includeDeleted?: boolean } = {}): Promise<CustomerDto> {
+  const doc = await CustomerModel.findOne({
+    _id: toId(id),
+    acoId: toId(acoId, 'acoId'),
+    ...(options.includeDeleted ? {} : { deletedAt: null }),
+  }).lean<CustomerDoc>();
   if (!doc) throw new AppError('NOT_FOUND', 'Customer not found');
   return toCustomerDto(doc);
 }
@@ -317,7 +286,7 @@ export async function listEligible(
   cycleType: CycleType,
   participantSurveyTypes?: readonly SurveyType[],
 ): Promise<EligibleEntry<CustomerDto>[]> {
-  const docs = await CustomerModel.find({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null,})
+  const docs = await CustomerModel.find({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null })
     .sort({ name: 1, _id: 1 })
     .lean<CustomerDoc[]>();
   return eligibleCustomers(docs.map(toCustomerDto), cycleType, participantSurveyTypes);
@@ -325,7 +294,7 @@ export async function listEligible(
 
 /** ACTIVE customers of one operator (what the operator card shows). */
 export async function countByAco(acoId: string): Promise<number> {
-  return CustomerModel.countDocuments({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null,});
+  return CustomerModel.countDocuments({ acoId: toId(acoId, 'acoId'), status: 'ACTIVE', deletedAt: null });
 }
 
 /** ACTIVE customers per operator; the organisations module's customer counter. */
@@ -338,9 +307,13 @@ export async function countByAcos(acoIds: string[]): Promise<Map<string, number>
   return new Map(rows.map((row) => [idString(row._id), row.count]));
 }
 
-/** Every e-mail in the operator's directory, any status — what a re-import matches against. */
+/**
+ * Every e-mail in the operator's directory, any status — what a re-import
+ * matches against. A deleted customer's e-mail counts as new: importing it
+ * restores that customer.
+ */
 export async function emailsByAco(acoId: string): Promise<string[]> {
-  return CustomerModel.distinct('email', { acoId: toId(acoId, 'acoId') });
+  return CustomerModel.distinct('email', { acoId: toId(acoId, 'acoId'), deletedAt: null });
 }
 
 /** Records the cycle a set of customers was last sampled in (sampling calls this on lock). */

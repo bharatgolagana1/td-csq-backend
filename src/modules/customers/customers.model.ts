@@ -27,6 +27,7 @@ export interface CustomerDoc {
   lastSampledCycleId: Types.ObjectId | null;
   /** The `customer_imports` row that created or last updated this customer. */
   importBatchId: Types.ObjectId | null;
+  /** Set by DELETE; a deleted customer is out of the directory but keeps its history. Absent on older documents. */
   deletedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;

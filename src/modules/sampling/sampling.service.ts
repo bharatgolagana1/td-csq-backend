@@ -2,7 +2,7 @@
 // transactions, the participant's audit view and a customer's participation
 // history (ARCHITECTURE §6 "sampling", §7 "Sampling"; REQUIREMENTS §13–14).
 // The pure rules live in ./domain; this file applies them to storage.
-import type { AnyBulkWriteOperation } from 'mongoose';
+import type { AnyBulkWriteOperation, ClientSession } from 'mongoose';
 
 import { assertScope } from '../../core/auth/rbac.js';
 import type { RequestContext } from '../../core/auth/session.js';
@@ -444,4 +444,56 @@ export async function getParticipation(ctx: RequestContext, customerId: string, 
     }),
   );
   return { customer, cycles: rows };
+}
+
+// --- a customer leaves the directory -------------------------------------------
+
+/** Cycle statuses in which a sample still turns into invitations, e-mails or reminders. */
+const RUNNING_STATUSES: readonly CycleStatus[] = ['PUBLISHED', 'SAMPLING_OPEN', 'SAMPLING_CLOSED', 'ASSESSMENT_OPEN'];
+
+/**
+ * `customer.deleted`, inside the delete transaction. A selection that is not
+ * locked yet simply loses the customer (and the participant's counter follows);
+ * a locked sample of a running cycle keeps it and the delete is refused, since
+ * its invitation is already pending or sent. Closed and scored cycles are
+ * history and stay as they are.
+ */
+export async function releaseDeletedCustomer(payload: Events['customer.deleted'], session?: ClientSession): Promise<void> {
+  const acoId = toId(payload.acoId, 'acoId');
+  const samples = await SampleModel.find(
+    { acoId, customerId: toId(payload.customerId, 'customerId'), state: { $in: ['SELECTED', 'LOCKED'] } },
+    null,
+    session ? { session } : {},
+  ).lean<SampleDoc[]>();
+  if (samples.length === 0) return;
+
+  const ctx = systemContext('sampling: customer deleted');
+  const cycleIds = [...new Set(samples.map((sample) => idString(sample.cycleId)))];
+  const cycles = new Map(await Promise.all(cycleIds.map(async (id) => [id, await findCycleSummary(ctx, id)] as const)));
+  const runningCycle = (sample: SampleDoc) => {
+    const cycle = cycles.get(idString(sample.cycleId));
+    return cycle && RUNNING_STATUSES.includes(cycle.status) ? cycle : null;
+  };
+
+  const locked = samples.filter((sample) => sample.state === 'LOCKED' && runningCycle(sample));
+  if (locked.length > 0) {
+    const codes = [...new Set(locked.map((sample) => runningCycle(sample)?.code))].join(', ');
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      `This customer is in the locked sample of ${codes}. Ask ACFI to unlock the sample, or delete the customer once the assessment has closed.`,
+      { cycleIds: [...new Set(locked.map((sample) => idString(sample.cycleId)))] },
+    );
+  }
+
+  const selected = samples.filter((sample) => sample.state === 'SELECTED' && runningCycle(sample));
+  if (selected.length === 0) return;
+  await SampleModel.updateMany(
+    { _id: { $in: selected.map((sample) => sample._id) } },
+    { $set: { state: 'REMOVED', removedAt: new Date() } },
+    session ? { session } : {},
+  );
+  for (const cycleId of new Set(selected.map((sample) => idString(sample.cycleId)))) {
+    const selectedCount = await SampleModel.countDocuments({ cycleId: toId(cycleId, 'cycleId'), acoId, state: 'SELECTED' }, session ? { session } : {});
+    await patchParticipantSampling(cycleId, payload.acoId, { selectedCount }, session);
+  }
 }

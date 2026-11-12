@@ -1,5 +1,6 @@
 import { defineModule } from '../../core/module.js';
 
+import { registerSamplingHandlers } from './sampling.handlers.js';
 import { samplingRoutes } from './sampling.routes.js';
 
 export default defineModule({
@@ -12,4 +13,5 @@ export default defineModule({
     { code: 'sampling.unlock', name: 'Unlock sample', description: 'Platform: unlock a locked sample with a reason' },
   ],
   routes: samplingRoutes,
+  registerHandlers: registerSamplingHandlers,
 });
