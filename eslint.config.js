@@ -4,7 +4,8 @@ import importX from 'eslint-plugin-import-x';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**'] },
+  // The Keycloak login theme is browser code served by Keycloak, not part of the API.
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'deploy/keycloak/theme/**'] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,

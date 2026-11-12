@@ -62,7 +62,8 @@ export async function participantRef(cycleId: string, acoId: string): Promise<Pa
 }
 
 export async function customerRef(acoId: string, customerId: string): Promise<CustomerRef | null> {
-  const customer = await getCustomer(acoId, customerId).catch(nullOnNotFound);
+  // A deleted customer's answers still show who gave them.
+  const customer = await getCustomer(acoId, customerId, { includeDeleted: true }).catch(nullOnNotFound);
   if (!customer) return null;
   return { id: customer.id, name: customer.name, contactPerson: customer.contactPerson, email: customer.email, type: customer.type };
 }
