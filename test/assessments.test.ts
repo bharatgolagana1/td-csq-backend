@@ -487,7 +487,7 @@ describe('history, masking, tenancy and export', () => {
       customerType: 'FF',
       customerId: customerB,
       assessorName: 'Dev Patel',
-      assessorEmailMasked: 'dev@bombayfreight.test',
+      assessorEmailMasked: 'd***@bombayfreight.test',
       assessor: { name: 'Dev Patel', email: 'dev@bombayfreight.test', revealed: true },
       status: 'SUBMITTED',
       progress: { answered: 4, total: 4, pct: 100 },
@@ -513,24 +513,21 @@ describe('history, masking, tenancy and export', () => {
     expectError(await superAdmin.get('/api/v1/assessments?sort=answers'), 400, 'VALIDATION');
   });
 
-  it('an operator sees its own rows with the assessor masked until the setting reveals identities; its own self-assessment is never masked', async () => {
+  it('an operator sees no customer name or e-mail until the setting reveals identities; its own self-assessment is never hidden', async () => {
     const mine = await adminB.get('/api/v1/assessments');
     expect(mine.status).toBe(200);
     expect(mine.body.meta.total).toBe(2);
     expect((mine.body.data as { operator: { code: string } }[]).every((r) => r.operator.code === 'ACO-B')).toBe(true);
-    const customer = (mine.body.data as { kind: string; assessorName: string; assessorEmailMasked: string; customerId: string | null; assessor: { name: string; email: string | null; revealed: boolean } }[]).find((r) => r.kind === 'CUSTOMER')!;
-    expect(customer).toMatchObject({
-      assessorName: '********',
-      assessorEmailMasked: '********',
-      customerId: null,
-      assessor: { name: '********', email: '********', revealed: false },
-    });
+    const customer = (mine.body.data as { kind: string; assessorName: string | null; assessorEmailMasked: string | null; customerId: string | null; assessor: { name: string | null; email: string | null; revealed: boolean } }[]).find((r) => r.kind === 'CUSTOMER')!;
+    expect(customer).toMatchObject({ assessorName: null, assessorEmailMasked: null, customerId: null, assessor: { name: null, email: null, revealed: false } });
+    // Hidden means not sent at all, not even initials.
+    expect(JSON.stringify(mine.body)).not.toMatch(/Dev Patel|D\*\*\* P\*\*\*|bombayfreight/);
     const self = (mine.body.data as { kind: string; assessorName: string; assessor: { revealed: boolean } }[]).find((r) => r.kind === 'SELF')!;
     expect(self).toMatchObject({ assessorName: adminB.user.name, assessor: { revealed: true } });
 
     const one = await adminB.get(`/api/v1/assessments/${submittedB}`);
     expect(one.status).toBe(200);
-    expect(one.body.data.assessor.revealed).toBe(false);
+    expect(one.body.data).toMatchObject({ assessorName: null, assessorEmailMasked: null, customerId: null, assessor: { name: null, email: null, revealed: false } });
     expect(one.body.data.survey).toEqual({ id: domestic.id, code: 'DOMESTIC', name: 'DOMESTIC test survey', version: 1, status: 'PUBLISHED' });
     expect(one.body.data.answers).toEqual([
       expect.objectContaining({ code: 'Q.LOW', text: 'Question Q.LOW', category: expect.objectContaining({ code: 'INFRA' }), subcategory: null, rating: null, na: true }),
@@ -542,7 +539,12 @@ describe('history, masking, tenancy and export', () => {
     expect((await superAdmin.patch('/api/v1/settings').send({ revealAssessorIdentity: true })).status).toBe(200);
     try {
       const revealed = await adminB.get(`/api/v1/assessments/${submittedB}`);
-      expect(revealed.body.data).toMatchObject({ assessorName: 'Dev Patel', customerId: customerB, assessor: { email: 'dev@bombayfreight.test', revealed: true } });
+      expect(revealed.body.data).toMatchObject({
+        assessorName: 'Dev Patel',
+        assessorEmailMasked: 'd***@bombayfreight.test',
+        customerId: customerB,
+        assessor: { email: 'dev@bombayfreight.test', revealed: true },
+      });
     } finally {
       await superAdmin.patch('/api/v1/settings').send({ revealAssessorIdentity: false });
     }
@@ -575,7 +577,7 @@ describe('history, masking, tenancy and export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.headers['content-disposition']).toContain('assessments-CSQ-2026-1.csv');
     const lines = res.text.trim().split('\n');
-    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp,answerMode,direction,importScore,exportScore');
+    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp');
     // Three SUBMITTED assessments: FF customer (4 questions) + SELF (5) of ACO-A, FF customer (4) of ACO-B.
     expect(lines).toHaveLength(1 + 4 + 5 + 4);
     expect(lines.find((line) => line.includes(submittedB) && line.includes('Q.REQ'))).toContain('Dev Patel,dev@bombayfreight.test,SUBMITTED');
@@ -584,7 +586,9 @@ describe('history, masking, tenancy and export', () => {
     const myLines = mine.text.trim().split('\n').slice(1);
     expect(myLines).toHaveLength(4 + 5);
     expect(myLines.every((line) => line.includes(',ACO-B,'))).toBe(true);
-    expect(myLines.find((line) => line.includes('Q.REQ') && line.includes('CUSTOMER'))).toContain('********,********');
+    // The operator's export leaves a hidden customer's name and e-mail empty.
+    expect(myLines.find((line) => line.includes('Q.REQ') && line.includes('CUSTOMER'))).toContain(',CUSTOMER,DOMESTIC,FF,,,SUBMITTED,');
+    expect(mine.text).not.toMatch(/Dev Patel|bombayfreight/);
     expectError(await superAdmin.get('/api/v1/assessments/export'), 400, 'VALIDATION');
     expectError(await adminB.get(`/api/v1/assessments/export?cycleId=${idString(newId())}`), 404, 'NOT_FOUND');
   });

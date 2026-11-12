@@ -156,7 +156,7 @@ describe('participant flow', () => {
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     // (25 × 4 + 2) / 26 = 3.92 → 3.9
-    expect(res.body.data[0]).toMatchObject({ id: assessmentId, status: 'SUBMITTED', assessorName: '********', assessorEmailMasked: '********', score: 3.9 });
+    expect(res.body.data[0]).toMatchObject({ id: assessmentId, status: 'SUBMITTED', assessorName: null, assessorEmailMasked: null, customerId: null, assessor: { name: null, email: null, revealed: false }, score: 3.9 });
     const one = await operator.get(`/api/v1/assessments/${assessmentId}`);
     expect(one.status).toBe(200);
     expect(one.body.data.answers).toHaveLength(27);

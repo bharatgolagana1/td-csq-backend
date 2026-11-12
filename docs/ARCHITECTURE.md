@@ -158,7 +158,7 @@ database authorises.
   `airports.view airports.manage · operators.view operators.manage ·
   onboarding.links onboarding.review · surveys.view surveys.manage ·
   marketshare.view marketshare.manage · cycles.view cycles.manage
-  cycles.publish cycles.operate · customers.view customers.manage ·
+  cycles.publish cycles.operate · customers.view customers.manage customers.delete ·
   sampling.view sampling.manage sampling.lock sampling.unlock ·
   assessments.self assessments.view · reports.operator reports.airport
   reports.national · monitoring.view · users.view users.manage · roles.view
@@ -199,7 +199,7 @@ Collections and key fields (indexes in brackets).
   A published survey version is immutable; editing creates the next DRAFT version. A cycle pins `surveyVersions { DOMESTIC?: surveyId, INTERNATIONAL?: surveyId }` at publish.
 - `cycles` `{ name, code, type: DOMESTIC|INTERNATIONAL|BOTH, tz, sampling { start, end }, assessment { start, end } (each { wall: 'YYYY-MM-DDTHH:mm', utc: Date }), minSampleSize, reminders { sampling { count, everyDays }, assessment { count, everyDays } }, participatingAirportIds, participatingAcoIds, surveyVersions, status: DRAFT|PUBLISHED|SAMPLING_OPEN|SAMPLING_CLOSED|ASSESSMENT_OPEN|ASSESSMENT_CLOSED|SCORED|ARCHIVED, publishedAt, publishedBy, marketShareFrozen: boolean, scoredAt }` [status, code unique]
 - `cycle_participants` `{ cycleId, acoId, airportId, surveyTypes: [DOMESTIC|INTERNATIONAL], requiredSampleSize, sampling { status: NOT_STARTED|IN_PROGRESS|LOCKED|UNLOCKED, selectedCount, lockedAt?, lockedBy?, unlockedAt?, unlockedBy?, unlockReason? }, stats { invited, started, completed }, selfAssessment { DOMESTIC?: status, INTERNATIONAL?: status } }` [cycleId+acoId unique]
-- `customers` `{ acoId, airportId, name, contactPerson, email (lowercase), phone, type: FF|CB, surveyType: DOMESTIC|INTERNATIONAL|BOTH, status: ACTIVE|INACTIVE, tags: string[], lastSampledCycleId?, importBatchId? }` [acoId+email unique; acoId+status]
+- `customers` `{ acoId, airportId, name, contactPerson, email (lowercase), phone, type: FF|CB, surveyType: DOMESTIC|INTERNATIONAL|BOTH, status: ACTIVE|INACTIVE, tags: string[], lastSampledCycleId?, importBatchId?, deletedAt? }` [acoId+email unique; acoId+status]. `deletedAt` set = deleted: out of the directory, the eligible list and the counters, history kept; adding or importing the same e-mail restores it (ACTIVE).
 - `customer_imports` `{ acoId, fileName, rows, accepted, rejected, errors: [{ row, field, message }], status: VALIDATED|COMMITTED, createdBy }`
 - `samples` `{ cycleId, acoId, customerId, surveyType, state: SELECTED|LOCKED|REMOVED, addedBy, addedAt, removedAt? }` [cycleId+acoId+customerId+surveyType unique]
 - `invitations` `{ cycleId, acoId, customerId, surveyType, assessmentId?, tokenHash, state: PENDING|SENT|OPENED|VERIFIED|SUBMITTED|EXPIRED|REVOKED, email, otp { hash, expiresAt, attempts }, sentAt, openedAt, verifiedAt, submittedAt, remindersSent, lastReminderAt, expiresAt }` [tokenHash unique; cycleId+acoId+state]
@@ -261,7 +261,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /cycles/current` `cycles.view` → the cycle(s) an ACO must act on now, with the cycle strip data `{ cycle, participant, nextDeadline { kind, at } }`.
 
 ### customers (ACO scope; PLATFORM may pass `acoId`)
-- `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate`
+- `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate` · `DELETE /customers/:id` `customers.delete` (204; drops the customer from selections that are not locked; 412 while it is in a locked sample of a running cycle — the `customer.deleted` event, which sampling handles inside the delete transaction)
 - `GET /customers/import/template` → CSV template · `POST /customers/import/validate` (multipart CSV) → `{ importId, rows, accepted, rejected, errors[], preview[] }` · `POST /customers/import/:importId/commit` → creates/updates customers (transaction).
 - `GET /customers/:id/participation` → cycles the customer was sampled in and whether they submitted.
 - `GET /customers/eligible?cycleId=` [list] `customers.view` (filters `surveyType, type`; `q` over name, e-mail, contact) → `[{ customer, surveyType, key }]`: the operator's eligible entries for the cycle, expanded by the sampling rule (a BOTH customer in a BOTH cycle is two rows) and paginated server-side; 404 when the cycle is not visible or the operator is not a participant.
@@ -287,7 +287,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 
 ### assessments (signed-in)
 - `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType`) → history grid rows `{ id, cycle, kind, customerType, assessorName, assessorEmailMasked, status, submittedAt, score }`
-- `GET /assessments/:id` → read-only return (answers with question text); customer identity masked for ACO users unless `settings.revealAssessorIdentity`.
+- `GET /assessments/:id` → read-only return (answers with question text); a customer's identity is hidden from non-platform users unless `settings.revealAssessorIdentity` — `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
 - `GET /assessments/self/:cycleId/:surveyType` `assessments.self` → the ACO's self-assessment (created on first access) · `PATCH …/answers` · `POST …/submit`.
 - `GET /assessments/export?cycleId=` `assessments.view` → CSV.
 
@@ -354,7 +354,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 - **Audit** actions: `registration.submitted/approved/rejected`,
   `operator.created/updated/deactivated`, `marketshare.updated`,
   `survey.published`, `cycle.created/updated/published/transitioned`,
-  `customer.created/updated/deactivated/imported`, `sample.selection.changed`,
+  `customer.created/updated/deactivated/imported/deleted/restored`, `sample.selection.changed`,
   `sample.locked/unlocked`, `invitation.sent/resent/revoked`,
   `assessment.submitted`, `scoring.run`, `roles.matrix.saved`,
   `user.created/updated`, `settings.updated`, `notification.resent`.

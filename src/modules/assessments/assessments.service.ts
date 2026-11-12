@@ -493,7 +493,7 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       customerType: doc.customerType,
       customerId: revealed && doc.customerId ? idString(doc.customerId) : null,
       assessorName: assessor.name,
-      assessorEmailMasked: identity.email === null ? null : maskEmail(identity.email),
+      assessorEmailMasked: revealed && identity.email !== null ? maskEmail(identity.email) : null,
       assessor,
       status: doc.status,
       progress: progressOf(doc.answeredCount, doc.questionCount),

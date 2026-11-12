@@ -39,6 +39,8 @@ export interface Events {
     invitationId?: string;
   };
   'scoring.completed': { cycleId: string; provisional: boolean };
+  /** Inside the delete transaction; a listener that throws keeps the customer. */
+  'customer.deleted': { acoId: string; customerId: string };
 }
 
 export interface EventMeta {
