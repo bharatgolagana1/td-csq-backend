@@ -23,6 +23,7 @@ import {
 import {
   createCustomer,
   deactivateCustomer,
+  deleteCustomer,
   getCustomerInScope,
   listCustomers,
   listEligibleInScope,
@@ -140,5 +141,13 @@ export const customersRoutes = [
     params: customerParams,
     response: customerResponse,
     handler: ({ ctx, params }) => reactivateCustomer(ctx, params.id),
+  }),
+  route({
+    method: 'delete',
+    path: '/:id',
+    policy: { kind: 'task', task: 'customers.delete' },
+    summary: 'Delete a customer from the directory (soft; 412 while it is in a locked sample of a running cycle)',
+    params: customerParams,
+    handler: ({ ctx, params }) => deleteCustomer(ctx, params.id),
   }),
 ];
