@@ -1,16 +1,18 @@
 import { model, Schema, type Types } from 'mongoose';
 
 import {
+  ANSWER_MODES,
   CYCLE_STATUSES,
   CYCLE_TYPES,
+  type AnswerMode,
   type CycleStatus,
   type CycleType,
   type ReminderPolicy,
   type WindowEdge,
 } from './domain/types.js';
 
-export { CYCLE_STATUSES, CYCLE_TYPES } from './domain/types.js';
-export type { CycleStatus, CycleType, ReminderPolicy, WindowEdge } from './domain/types.js';
+export { ANSWER_MODES, CYCLE_STATUSES, CYCLE_TYPES } from './domain/types.js';
+export type { AnswerMode, CycleStatus, CycleType, ReminderPolicy, WindowEdge } from './domain/types.js';
 
 /** `{ DOMESTIC?, INTERNATIONAL? }` survey version ids pinned at publish (null = not pinned / not run). */
 export interface SurveyVersionRefs {
@@ -28,6 +30,8 @@ export interface CycleDoc {
   name: string;
   code: string;
   type: CycleType;
+  /** Fixed once published. Absent on cycles stored before answer modes existed, which read as SINGLE (`cycleAnswerMode`). */
+  answerMode?: AnswerMode;
   /** IANA zone the windows were entered in (`Asia/Kolkata` by default). */
   tz: string;
   sampling: CycleWindowDoc;
@@ -85,6 +89,7 @@ const schema = new Schema<CycleDoc>(
     name: { type: String, required: true, trim: true },
     code: { type: String, required: true, uppercase: true, trim: true, unique: true },
     type: { type: String, enum: CYCLE_TYPES, required: true },
+    answerMode: { type: String, enum: ANSWER_MODES, required: true, default: 'SINGLE' },
     tz: { type: String, required: true },
     sampling: { type: windowSchema, required: true },
     assessment: { type: windowSchema, required: true },

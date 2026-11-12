@@ -12,7 +12,7 @@ import { idString, toId } from '../src/core/ids.js';
 import type { CustomerType } from '../src/modules/assessments/assessments.model.js';
 import { CustomerModel } from '../src/modules/customers/customers.model.js';
 import { CycleModel } from '../src/modules/cycles/cycles.model.js';
-import type { CycleType } from '../src/modules/cycles/domain/types.js';
+import type { AnswerMode, CycleType } from '../src/modules/cycles/domain/types.js';
 import { createParticipants } from '../src/modules/cycles/participants.service.js';
 import type { OrganisationDoc } from '../src/modules/organisations/organisations.model.js';
 import { createSurveyFromDefinition, getSurveyTree, type QuestionDefinition } from '../src/modules/surveys/surveys.service.js';
@@ -175,6 +175,7 @@ export interface TestParticipant {
 export interface TestCycleOptions {
   code: string;
   type?: CycleType;
+  answerMode?: AnswerMode;
   status: CycleStatus;
   surveyVersions: { DOMESTIC: string | null; INTERNATIONAL: string | null };
   participants: TestParticipant[];
@@ -197,6 +198,7 @@ export async function createTestCycle(options: TestCycleOptions): Promise<TestCy
     name: `Cycle ${options.code}`,
     code: options.code,
     type: options.type ?? 'BOTH',
+    answerMode: options.answerMode ?? 'SINGLE',
     tz: 'Asia/Kolkata',
     sampling: { start: edge(new Date(now - 20 * DAY)), end: edge(new Date(now - 10 * DAY)) },
     assessment: { start: edge(new Date(now - 10 * DAY)), end: edge(new Date(now + 20 * DAY)) },

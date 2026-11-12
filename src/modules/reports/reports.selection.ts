@@ -1,12 +1,13 @@
 // Which cycle and survey type a report is about when the caller does not say:
 // the latest SCORED cycle the subject took part in, else the current (live)
 // one with figures flagged provisional. An explicit `cycleId` must be visible
-// to the caller and must include the subject, else 404.
+// to the caller and must include the subject, else 404. The direction follows
+// the chosen cycle's answer mode (`directionOf`).
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 
-import { isLive, isScored, surveyTypesOfCycle } from './reports.figures.js';
-import type { SurveyType } from './reports.schemas.js';
+import { directionOf, isLive, isScored, surveyTypesOfCycle } from './reports.figures.js';
+import type { ReportDirection, RequestedDirection, SurveyType } from './reports.schemas.js';
 import {
   loadCycle,
   loadCycleRefs,
@@ -21,6 +22,7 @@ import {
 export interface ReportSelection {
   cycle: CycleView;
   surveyType: SurveyType;
+  direction: ReportDirection;
   provisional: boolean;
 }
 
@@ -36,6 +38,7 @@ export interface AirportSelection extends ReportSelection {
 interface SelectionQuery {
   cycleId?: string | undefined;
   surveyType?: string | undefined;
+  direction?: RequestedDirection | undefined;
 }
 
 async function requireCycle(ctx: RequestContext, cycleId: string): Promise<CycleView> {
@@ -97,6 +100,7 @@ export async function selectOperatorCycle(ctx: RequestContext, acoId: string, qu
     cycle: found.cycle,
     participant: found.member,
     surveyType: chooseSurveyType(found.member.surveyTypes, query.surveyType, 'Operator'),
+    direction: directionOf(found.cycle, query.direction),
     provisional: !isScored(found.cycle),
   };
 }
@@ -122,6 +126,7 @@ export async function selectAirportCycle(ctx: RequestContext, airportId: string,
     cycle: found.cycle,
     participants: found.member,
     surveyType: chooseSurveyType(surveyTypesOfCycle(found.cycle.type), query.surveyType, 'Airport'),
+    direction: directionOf(found.cycle, query.direction),
     provisional: !isScored(found.cycle),
   };
 }
@@ -135,6 +140,7 @@ export async function selectNationalCycle(ctx: RequestContext, query: SelectionQ
   return {
     cycle,
     surveyType: chooseSurveyType(surveyTypesOfCycle(cycle.type), query.surveyType, 'The cycle'),
+    direction: directionOf(cycle, query.direction),
     provisional: !isScored(cycle),
   };
 }

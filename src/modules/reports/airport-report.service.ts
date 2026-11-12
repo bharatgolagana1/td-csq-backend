@@ -49,10 +49,10 @@ async function operatorsTable(overall: AirportScoreView | undefined, participant
 
 export async function airportReport(ctx: RequestContext, airportId: string, query: AirportReportQuery): Promise<AirportReportDto> {
   const airport = await requireVisibleAirport(ctx, airportId);
-  const { cycle, participants, surveyType, provisional } = await selectAirportCycle(ctx, airportId, query);
+  const { cycle, participants, surveyType, direction, provisional } = await selectAirportCycle(ctx, airportId, query);
   const surveyId = cycle.surveyVersions[surveyType];
   const [rows, tree] = await Promise.all([
-    loadAirportScores(cycle.id, airportId, surveyType),
+    loadAirportScores(cycle.id, airportId, surveyType, direction),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
   const overall = rows.find((row) => row.level === 'OVERALL' && row.refId === OVERALL_REF_ID);
@@ -62,6 +62,7 @@ export async function airportReport(ctx: RequestContext, airportId: string, quer
   return {
     cycle: cycleSummaryOf(cycle),
     surveyType,
+    direction,
     provisional,
     airport,
     overall: {

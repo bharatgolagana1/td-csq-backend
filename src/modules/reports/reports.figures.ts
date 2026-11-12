@@ -3,7 +3,7 @@
 import { cycleSurveyTypes } from '../cycles/domain/participants.js';
 import { round2, roundHalfUp, rowKey } from '../scoring/engine/index.js';
 
-import type { CycleSummaryDto, LevelFiguresDto, MeanWithNDto, OperatorSummaryDto, SurveyType } from './reports.schemas.js';
+import type { CycleSummaryDto, LevelFiguresDto, MeanWithNDto, OperatorSummaryDto, ReportDirection, RequestedDirection, SurveyType } from './reports.schemas.js';
 import type { AirportView, CycleView, CycleType, OperatorView, ScoreLevel, ScoreRowView } from './reports.sources.js';
 
 export { round2, roundHalfUp };
@@ -25,12 +25,18 @@ export function surveyTypesOfCycle(type: CycleType): SurveyType[] {
   return cycleSurveyTypes(type);
 }
 
+/** The direction a cycle's report is in: SINGLE on a SINGLE cycle whatever was asked, else the requested side (IMPORT by default). */
+export function directionOf(cycle: Pick<CycleView, 'answerMode'>, requested: RequestedDirection | undefined): ReportDirection {
+  return cycle.answerMode === 'IMPORT_EXPORT' ? (requested ?? 'IMPORT') : 'SINGLE';
+}
+
 export function cycleSummaryOf(cycle: CycleView): CycleSummaryDto {
   return {
     id: cycle.id,
     code: cycle.code,
     name: cycle.name,
     type: cycle.type,
+    answerMode: cycle.answerMode,
     status: cycle.status,
     assessment: cycle.assessment ? { start: cycle.assessment.start.toISOString(), end: cycle.assessment.end.toISOString() } : null,
     scoredAt: cycle.scoredAt?.toISOString() ?? null,

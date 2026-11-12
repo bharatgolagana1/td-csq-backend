@@ -4,7 +4,7 @@ import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
 
 import { COMMENT_MODES, SURVEY_STATUSES } from './assessments.form.js';
-import { ASSESSMENT_KINDS, ASSESSMENT_STATUSES, CUSTOMER_TYPES, SURVEY_TYPES } from './assessments.model.js';
+import { ANSWER_DIRECTIONS, ANSWER_MODES, ASSESSMENT_KINDS, ASSESSMENT_STATUSES, CUSTOMER_TYPES, SURVEY_TYPES } from './assessments.model.js';
 
 export const ratingSchema = z.number().int().min(1).max(5);
 
@@ -17,6 +17,8 @@ export type ProgressDto = z.infer<typeof progressResponse>;
 
 export const answerResponse = z.object({
   questionId: z.string(),
+  /** Present on an IMPORT_EXPORT assessment only. */
+  direction: z.enum(ANSWER_DIRECTIONS).optional(),
   rating: ratingSchema.nullable(),
   na: z.boolean(),
   comment: z.string().nullable(),
@@ -39,6 +41,8 @@ export const assessmentResponse = z.object({
   surveyId: z.string(),
   surveyType: z.enum(SURVEY_TYPES),
   kind: z.enum(ASSESSMENT_KINDS),
+  /** The cycle's mode at creation: IMPORT_EXPORT answers every question once per direction. */
+  answerMode: z.enum(ANSWER_MODES),
   customerType: z.enum(CUSTOMER_TYPES).nullable(),
   invitationId: z.string().nullable(),
   userId: z.string().nullable(),
@@ -127,6 +131,8 @@ export type DraftDto = z.infer<typeof draftResponse>;
 export const answerInputSchema = z
   .object({
     questionId: z.string().trim().min(1).max(64),
+    /** Required on an IMPORT_EXPORT assessment, refused on a SINGLE one. */
+    direction: z.enum(ANSWER_DIRECTIONS).optional(),
     rating: ratingSchema.nullable().optional(),
     na: z.boolean().optional(),
     comment: z.string().trim().max(2000).nullable().optional(),
@@ -134,7 +140,7 @@ export const answerInputSchema = z
   })
   .strict();
 
-/** `PATCH …/answers` body: a merge by question; each entry replaces the stored answer for its question. */
+/** `PATCH …/answers` body: a merge by question (and direction); each entry replaces the stored answer in its slot. */
 export const patchAnswersBody = z.object({ answers: z.array(answerInputSchema).max(500) }).strict();
 export type PatchAnswersInput = z.infer<typeof patchAnswersBody>;
 
@@ -197,8 +203,11 @@ export const historyRowResponse = z.object({
   progress: progressResponse,
   startedAt: z.string(),
   submittedAt: z.string().nullable(),
-  /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated. */
+  /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated, and on an IMPORT_EXPORT assessment. */
   score: z.number().nullable(),
+  /** The same per direction on an IMPORT_EXPORT assessment; null on a SINGLE one. */
+  importScore: z.number().nullable(),
+  exportScore: z.number().nullable(),
 });
 export type HistoryRowDto = z.infer<typeof historyRowResponse>;
 
@@ -221,6 +230,8 @@ export const detailAnswerResponse = answerResponse.extend({
 
 /** `GET /assessments/:id`: the read-only return, every form question with its answer. */
 export const assessmentDetailResponse = historyRowResponse.extend({
+  /** IMPORT_EXPORT lists every question twice, IMPORT then EXPORT, each with its `direction`. */
+  answerMode: z.enum(ANSWER_MODES),
   survey: formSurveyResponse,
   answers: z.array(detailAnswerResponse),
 });

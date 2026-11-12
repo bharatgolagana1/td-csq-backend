@@ -11,7 +11,7 @@ import { listEligible } from '../../modules/customers/customers.service.js';
 import { CycleModel } from '../../modules/cycles/cycles.model.js';
 import { createCycle, getParticipant, publishCycle, setParticipantSampling, transition } from '../../modules/cycles/cycles.service.js';
 import { addCalendarDays } from '../../modules/cycles/domain/derive.js';
-import type { CycleStatus, WallClock } from '../../modules/cycles/domain/types.js';
+import type { AnswerMode, CycleStatus, WallClock } from '../../modules/cycles/domain/types.js';
 import { localDateOf, toInstant } from '../../modules/cycles/domain/windows.js';
 import type { SelectionStateDto } from '../../modules/sampling/sampling.schemas.js';
 import { changeSelection, lock } from '../../modules/sampling/sampling.service.js';
@@ -47,6 +47,8 @@ export interface CycleSpec {
   code: string;
   name: string;
   kind: 'PAST' | 'LIVE';
+  /** The scored cycles predate import / export answers; the live one asks for both. */
+  answerMode: AnswerMode;
   minSampleSize: number;
   publishedAt: WallClock;
   sampling: { start: WallClock; end: WallClock };
@@ -128,6 +130,7 @@ export function cycleSpecs(now: Date): CycleSpec[] {
       code: 'CSQ-2025-H2',
       name: 'CSQ 2025 H2',
       kind: 'PAST',
+      answerMode: 'SINGLE',
       minSampleSize: 30,
       publishedAt: '2025-09-30T10:00',
       sampling: { start: '2025-10-01T00:00', end: '2025-10-11T00:00' },
@@ -139,6 +142,7 @@ export function cycleSpecs(now: Date): CycleSpec[] {
       code: 'CSQ-2026-H1',
       name: 'CSQ 2026 H1',
       kind: 'PAST',
+      answerMode: 'SINGLE',
       minSampleSize: 30,
       publishedAt: '2026-03-31T10:00',
       sampling: { start: '2026-04-01T00:00', end: '2026-04-11T00:00' },
@@ -150,6 +154,7 @@ export function cycleSpecs(now: Date): CycleSpec[] {
       code: 'CSQ-2026-H2',
       name: 'CSQ 2026 H2',
       kind: 'LIVE',
+      answerMode: 'IMPORT_EXPORT',
       minSampleSize: 50,
       publishedAt: day(-5, '10:00'),
       sampling: { start: day(-4), end: day(10) },
@@ -193,6 +198,7 @@ export async function ensureCycle(ctx: RequestContext, spec: CycleSpec, operator
     name: spec.name,
     code: spec.code,
     type: 'BOTH',
+    answerMode: spec.answerMode,
     tz: DEMO_TZ,
     sampling: spec.sampling,
     assessment: spec.assessment,

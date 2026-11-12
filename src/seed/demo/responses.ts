@@ -4,9 +4,18 @@
 // flow itself — the link from the invitation e-mail, the OTP from the OTP
 // e-mail (`revealOtp`), the form, autosave and submit — all through the
 // invitations and assessments services so every event and e-mail happens.
+// An IMPORT_EXPORT cycle's assessors answer every question twice, export a
+// touch lower than import.
 import type { RequestContext } from '../../core/auth/session.js';
-import { formFromStakeholderForm, formFromTree, formQuestionPlaces, type AnswerInput, type AssessmentForm } from '../../modules/assessments/assessments.form.js';
-import type { Rating } from '../../modules/assessments/assessments.model.js';
+import {
+  formFromStakeholderForm,
+  formFromTree,
+  formQuestionPlaces,
+  type AnswerInput,
+  type AssessmentForm,
+  type FormQuestionPlace,
+} from '../../modules/assessments/assessments.form.js';
+import type { AnswerMode, Rating } from '../../modules/assessments/assessments.model.js';
 import { patchAnswers, patchSelfAnswers, submit, submitSelf } from '../../modules/assessments/assessments.service.js';
 import type { SurveyType } from '../../modules/cycles/domain/types.js';
 import { invitationsConfig } from '../../modules/invitations/invitations.config.js';
@@ -51,6 +60,32 @@ export interface AnswerOptions {
   partial?: number | undefined;
   /** Self-assessments use their own comment pool and never add follow-ups. */
   self: boolean;
+  /** IMPORT_EXPORT answers each question for import, then for export. Default SINGLE. */
+  answerMode?: AnswerMode | undefined;
+}
+
+/** Export cargo rates a little below import in the demo story. */
+const EXPORT_SHIFT = -0.06;
+
+/** One answer to one question, its rating drawn around the profile's quality moved by `shift`. */
+function answerFor({ question, category }: FormQuestionPlace, profile: RatingProfile, shift: number, rng: Rng, options: AnswerOptions): AnswerInput {
+  if (rng.chance(options.naRate)) return { questionId: question.id, na: true };
+  const quality = clamp(profile.quality + (profile.bias[category.code] ?? 0) + shift, 0.02, 0.98);
+  const rating = ratingFor(quality, rng);
+  const answer: AnswerInput = { questionId: question.id, rating };
+  const low = rating <= 2;
+  if (question.commentMode !== 'NONE') {
+    if (low || question.commentMode === 'REQUIRED') {
+      const pool = options.self ? SELF_COMMENTS : (LOW_RATING_COMMENTS[category.code] ?? GENERIC_LOW_COMMENTS);
+      answer.comment = rng.pick(pool);
+    } else if (!options.self && rating >= 4 && rng.chance(0.06)) {
+      answer.comment = rng.pick(POSITIVE_COMMENTS);
+    }
+  }
+  if (low && !options.self && question.followUp && question.followUp.options.length > 0) {
+    answer.followUp = rng.sample(question.followUp.options, rng.int(1, Math.min(2, question.followUp.options.length)));
+  }
+  return answer;
 }
 
 /** Every answer `patchAnswers` needs for a complete form, with comments and follow-ups where the rules demand them. */
@@ -58,25 +93,11 @@ export function generateAnswers(form: AssessmentForm, profile: RatingProfile, rn
   const mood = (rng.next() - 0.5) * 0.24;
   const places = formQuestionPlaces(form);
   const chosen = options.partial === undefined ? places : places.slice(0, options.partial);
-  return chosen.map(({ question, category }) => {
-    if (rng.chance(options.naRate)) return { questionId: question.id, na: true };
-    const quality = clamp(profile.quality + (profile.bias[category.code] ?? 0) + mood, 0.02, 0.98);
-    const rating = ratingFor(quality, rng);
-    const answer: AnswerInput = { questionId: question.id, rating };
-    const low = rating <= 2;
-    if (question.commentMode !== 'NONE') {
-      if (low || question.commentMode === 'REQUIRED') {
-        const pool = options.self ? SELF_COMMENTS : (LOW_RATING_COMMENTS[category.code] ?? GENERIC_LOW_COMMENTS);
-        answer.comment = rng.pick(pool);
-      } else if (!options.self && rating >= 4 && rng.chance(0.06)) {
-        answer.comment = rng.pick(POSITIVE_COMMENTS);
-      }
-    }
-    if (low && !options.self && question.followUp && question.followUp.options.length > 0) {
-      answer.followUp = rng.sample(question.followUp.options, rng.int(1, Math.min(2, question.followUp.options.length)));
-    }
-    return answer;
-  });
+  if (options.answerMode !== 'IMPORT_EXPORT') return chosen.map((place) => answerFor(place, profile, mood, rng, options));
+  return chosen.flatMap((place) => [
+    { ...answerFor(place, profile, mood, rng, options), direction: 'IMPORT' as const },
+    { ...answerFor(place, profile, mood + EXPORT_SHIFT, rng, options), direction: 'EXPORT' as const },
+  ]);
 }
 
 // --- forms -------------------------------------------------------------------
@@ -123,6 +144,7 @@ export function newBackdates(): Backdates {
 
 export interface ResponseCycle {
   id: string;
+  answerMode: AnswerMode;
   assessmentStart: Date;
   assessmentEnd: Date;
   surveyVersions: Partial<Record<SurveyType, string | null>>;
@@ -232,13 +254,13 @@ export async function respondToInvitations(
 
     if (outcome === 'IN_PROGRESS') {
       const partial = Math.max(1, Math.round(form.questionCount * (0.3 + rng.next() * 0.4)));
-      await patchAnswers(verified.assessmentId, generateAnswers(form, plan.profile, rng, { naRate: 0.04, partial, self: false }));
+      await patchAnswers(verified.assessmentId, generateAnswers(form, plan.profile, rng, { naRate: 0.04, partial, self: false, answerMode: cycle.answerMode }));
       backdates.assessments.set(verified.assessmentId, { startedAt: verifiedAt, lastSavedAt: new Date(verifiedAt.getTime() + 9 * MINUTE), submittedAt: null });
       result.inProgress += 1;
       continue;
     }
 
-    await patchAnswers(verified.assessmentId, generateAnswers(form, plan.profile, rng, { naRate: 0.04, self: false }));
+    await patchAnswers(verified.assessmentId, generateAnswers(form, plan.profile, rng, { naRate: 0.04, self: false, answerMode: cycle.answerMode }));
     const session = await links.verify(verified.sessionToken, 'participant');
     await submit(session, verified.assessmentId);
     const submittedAt = new Date(verifiedAt.getTime() + rng.int(8, 40) * MINUTE);
@@ -267,7 +289,7 @@ export async function submitSelfAssessments(
     if (!surveyId) continue;
     const form = await forms.self(surveyId);
     const rosier: RatingProfile = { quality: Math.min(0.98, profile.quality + 0.1), bias: profile.bias };
-    await patchSelfAnswers(acoCtx, cycle.id, surveyType, generateAnswers(form, rosier, rng, { naRate: 0.01, self: true }));
+    await patchSelfAnswers(acoCtx, cycle.id, surveyType, generateAnswers(form, rosier, rng, { naRate: 0.01, self: true, answerMode: cycle.answerMode }));
     const dto = await submitSelf(acoCtx, cycle.id, surveyType);
     const submittedAt = momentIn(new Date(cycle.assessmentStart.getTime() + 24 * HOUR), new Date(cycle.assessmentEnd.getTime() - 24 * HOUR), rng);
     backdates.assessments.set(dto.id, { startedAt: new Date(submittedAt.getTime() - 35 * MINUTE), lastSavedAt: new Date(submittedAt.getTime() - MINUTE), submittedAt });

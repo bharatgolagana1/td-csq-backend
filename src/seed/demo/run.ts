@@ -114,7 +114,7 @@ async function buildPastCycle(build: Build, spec: CycleSpec, cycleId: string): P
   await clockTransition(cycleId, 'ASSESSMENT_OPEN', 'ASSESSMENT_START', assessmentStart);
 
   const detail = await getCycle(actor.ctx, cycleId);
-  const cycle: ResponseCycle = { id: cycleId, assessmentStart, assessmentEnd, surveyVersions: detail.surveyVersions };
+  const cycle: ResponseCycle = { id: cycleId, answerMode: detail.answerMode, assessmentStart, assessmentEnd, surveyVersions: detail.surveyVersions };
   const forms = new FormCache();
   const backdates = newBackdates();
   let submitted = 0;
