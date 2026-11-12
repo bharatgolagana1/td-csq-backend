@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
-import { assessmentResponse, patchAnswersBody } from '../assessments/assessments.schemas.js';
+import { assessmentResponse, patchAnswersBody, patchSectionRemarksBody } from '../assessments/assessments.schemas.js';
 import { SURVEY_TYPES } from '../cycles/domain/types.js';
 
 import { INVITATION_STATES } from './domain/states.js';
@@ -91,6 +91,10 @@ export type VerifyDto = z.infer<typeof verifyResponse>;
 /** `PATCH …/answers`: the same batch assessments accepts (that module applies the form rules). */
 export const answersBody = patchAnswersBody;
 export type AnswersInput = z.infer<typeof answersBody>;
+
+/** `PATCH …/remarks`: the same batch assessments accepts (that module checks the sections against the form). */
+export const remarksBody = patchSectionRemarksBody;
+export type RemarksInput = z.infer<typeof remarksBody>;
 
 /** `POST …/submit`: the invitation after the submission plus the locked assessment. */
 export const submitResponse = z.object({

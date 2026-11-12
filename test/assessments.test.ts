@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { AppError } from '../src/core/errors.js';
 import { clearEventHandlers, on, type Events } from '../src/core/events.js';
-import { idString, newId } from '../src/core/ids.js';
+import { idString, newId, toId } from '../src/core/ids.js';
 import { AssessmentModel } from '../src/modules/assessments/assessments.model.js';
 import {
   getDraft,
@@ -11,6 +11,7 @@ import {
   getOrCreateSelf,
   listSubmitted,
   patchAnswers,
+  patchSectionRemarks,
   readiness,
   submit,
 } from '../src/modules/assessments/assessments.service.js';
@@ -22,6 +23,7 @@ import {
   createTestSurvey,
   ctxOf,
   FOLLOW_UP_OPTIONS,
+  remarkEverySection,
   setTestCycleStatus,
   type TestCycle,
   type TestSurvey,
@@ -268,6 +270,59 @@ describe('patchAnswers', () => {
   });
 });
 
+describe('patchSectionRemarks', () => {
+  let id: string;
+  const infra = () => domestic.section['INFRA']!;
+  const proc = () => domestic.section['PROC']!;
+
+  beforeAll(async () => {
+    id = (await getOrCreateForInvitation(invitation(ffCustomerA, idString(adminA.org._id)))).id;
+  });
+
+  it('saves one remark per section by merge, trims it, and an empty remark clears the section instead of storing it', async () => {
+    expect((await getDraft(id)).sectionRemarks).toEqual([]);
+    const saved = await patchSectionRemarks(id, [{ categoryId: infra(), remark: '  Sheds are tight in the peak  ' }]);
+    expect(saved.sectionRemarks).toEqual([{ categoryId: infra(), remark: 'Sheds are tight in the peak' }]);
+    expect(typeof saved.lastSavedAt).toBe('string');
+    // A batch names only the sections it changes; the others stay.
+    await patchSectionRemarks(id, [{ categoryId: proc(), remark: 'Smooth paperwork' }]);
+    await patchSectionRemarks(id, [{ categoryId: infra(), remark: 'Better after the new shed' }]);
+    expect((await getDraft(id)).sectionRemarks).toEqual([
+      { categoryId: infra(), remark: 'Better after the new shed' },
+      { categoryId: proc(), remark: 'Smooth paperwork' },
+    ]);
+    const cleared = await patchSectionRemarks(id, [{ categoryId: infra(), remark: '   ' }]);
+    expect(cleared.sectionRemarks).toEqual([{ categoryId: proc(), remark: 'Smooth paperwork' }]);
+    expect((await AssessmentModel.findById(id).lean())!.sectionRemarks).toEqual([{ categoryId: proc(), remark: 'Smooth paperwork' }]);
+    // Remarks leave the answers and their progress alone.
+    const draft = await getDraft(id);
+    expect(draft.answers).toEqual([]);
+    expect(draft.progress).toEqual({ answered: 0, total: 4, pct: 0 });
+    expect((await readiness(id)).missingSectionRemarks).toEqual([infra()]);
+  });
+
+  it('refuses the whole batch for a category not on the form (a subcategory is not a section) or named twice', async () => {
+    await expect(patchSectionRemarks(id, [{ categoryId: idString(newId()), remark: 'Elsewhere' }])).rejects.toMatchObject({
+      code: 'VALIDATION',
+      details: { issues: [{ path: 'sectionRemarks.0.categoryId' }] },
+    });
+    await expect(patchSectionRemarks(id, [{ categoryId: domestic.section['STORAGE']!, remark: 'Storage' }])).rejects.toMatchObject({ code: 'VALIDATION' });
+    await expect(patchSectionRemarks(id, [{ categoryId: infra(), remark: 'One' }, { categoryId: infra(), remark: 'Two' }])).rejects.toMatchObject({
+      code: 'VALIDATION',
+      details: { issues: [{ path: 'sectionRemarks.1.categoryId', message: `category ${infra()} appears twice in this batch` }] },
+    });
+    expect((await getDraft(id)).sectionRemarks).toEqual([{ categoryId: proc(), remark: 'Smooth paperwork' }]);
+    await expect(patchSectionRemarks(idString(newId()), [])).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('reads an assessment stored before remarks existed as having none', async () => {
+    await AssessmentModel.collection.updateOne({ _id: toId(id) }, { $unset: { sectionRemarks: '' } });
+    expect((await getDraft(id)).sectionRemarks).toEqual([]);
+    expect((await readiness(id)).missingSectionRemarks).toEqual([infra(), proc()]);
+    expect((await patchSectionRemarks(id, [{ categoryId: proc(), remark: 'Back again' }])).sectionRemarks).toEqual([{ categoryId: proc(), remark: 'Back again' }]);
+  });
+});
+
 describe('readiness and submit', () => {
   let id: string;
   const acoA = () => idString(adminA.org._id);
@@ -276,16 +331,23 @@ describe('readiness and submit', () => {
     id = (await getOrCreateForInvitation(invitation(ffCustomerA, acoA()))).id;
   });
 
-  it('lists the unanswered questions in form order and refuses to submit until none are left', async () => {
-    expect(await readiness(id)).toEqual({ answered: 0, total: 4, missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT'], domestic.q['Q.REQ'], domestic.q['Q.PLAIN']], complete: false });
+  it('lists the unanswered questions and the sections without a remark in form order, and refuses to submit until none are left', async () => {
+    const sections = [domestic.section['INFRA'], domestic.section['PROC']];
+    expect(await readiness(id)).toEqual({
+      answered: 0,
+      total: 4,
+      missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT'], domestic.q['Q.REQ'], domestic.q['Q.PLAIN']],
+      missingSectionRemarks: sections,
+      complete: false,
+    });
     await patchAnswers(id, [
       { questionId: domestic.q['Q.REQ']!, rating: 4, comment: 'Good' },
       { questionId: domestic.q['Q.PLAIN']!, rating: 5 },
     ]);
-    expect(await readiness(id)).toEqual({ answered: 2, total: 4, missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT']], complete: false });
+    expect(await readiness(id)).toEqual({ answered: 2, total: 4, missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT']], missingSectionRemarks: sections, complete: false });
     const link = { audience: 'participant' as const, subject: 'inv', claims: { asg: id }, expiresAt: new Date(Date.now() + 60_000) };
     const refused = await submit(link, id).catch((error: unknown) => error);
-    expect(refused).toMatchObject({ code: 'PRECONDITION_FAILED', details: { missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT']] } });
+    expect(refused).toMatchObject({ code: 'PRECONDITION_FAILED', details: { missing: [domestic.q['Q.LOW'], domestic.q['Q.OPT']], missingSectionRemarks: sections } });
     expect(submitted).toHaveLength(0);
   });
 
@@ -297,11 +359,29 @@ describe('readiness and submit', () => {
     await expect(submit(ctxOf(adminB), id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('submits once complete: SUBMITTED + submittedAt, the event with kind / surveyType / invitationId, the audit row; then everything is read-only', async () => {
+  it('every question answered is not enough: submit waits for a remark on every section', async () => {
     await patchAnswers(id, [
       { questionId: domestic.q['Q.OPT']!, na: true },
       { questionId: domestic.q['Q.LOW']!, rating: 2, comment: 'Slow gate', followUp: ['Long delay'] },
     ]);
+    const infra = domestic.section['INFRA']!;
+    const proc = domestic.section['PROC']!;
+    expect(await readiness(id)).toEqual({ answered: 4, total: 4, missing: [], missingSectionRemarks: [infra, proc], complete: false });
+    const link = { audience: 'participant' as const, subject: 'inv', claims: { asg: id }, expiresAt: new Date(Date.now() + 60_000) };
+    await expect(submit(link, id)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Add a remark to every section before submitting (2 left)',
+      details: { missing: [], missingSectionRemarks: [infra, proc] },
+    });
+    await patchSectionRemarks(id, [{ categoryId: infra, remark: 'Gate queues in the evening' }]);
+    expect(await readiness(id)).toMatchObject({ missingSectionRemarks: [proc], complete: false });
+    await expect(submit(link, id)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', details: { missingSectionRemarks: [proc] } });
+    await patchSectionRemarks(id, [{ categoryId: proc, remark: 'Paperwork is quick' }]);
+    expect(await readiness(id)).toEqual({ answered: 4, total: 4, missing: [], missingSectionRemarks: [], complete: true });
+    expect(submitted).toHaveLength(0);
+  });
+
+  it('submits once complete: SUBMITTED + submittedAt, the event with kind / surveyType / invitationId, the audit row; then everything is read-only', async () => {
     expect((await readiness(id)).complete).toBe(true);
     const link = { audience: 'participant' as const, subject: 'inv', claims: { asg: id, aco: acoA() }, expiresAt: new Date(Date.now() + 60_000) };
     const result = await submit(link, id);
@@ -320,7 +400,13 @@ describe('readiness and submit', () => {
 
     await expect(submit(link, id)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     await expect(patchAnswers(id, [{ questionId: domestic.q['Q.OPT']!, rating: 1 }])).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
-    expect((await getDraft(id)).status).toBe('SUBMITTED');
+    await expect(patchSectionRemarks(id, [{ categoryId: domestic.section['PROC']!, remark: 'Changed my mind' }])).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    const draft = await getDraft(id);
+    expect(draft.status).toBe('SUBMITTED');
+    expect(draft.sectionRemarks).toEqual([
+      { categoryId: domestic.section['INFRA'], remark: 'Gate queues in the evening' },
+      { categoryId: domestic.section['PROC'], remark: 'Paperwork is quick' },
+    ]);
     expect(submitted).toHaveLength(1);
   });
 
@@ -332,6 +418,7 @@ describe('readiness and submit', () => {
       { questionId: domestic.q['Q.NONE']!, rating: 3 },
       { questionId: domestic.q['Q.PLAIN']!, rating: 3 },
     ]);
+    await remarkEverySection(other);
     on('assessment.submitted', 'test.failing', async () => {
       throw new Error('listener down');
     });
@@ -377,7 +464,7 @@ describe('self assessment', () => {
       status: 'DRAFT',
       progress: { answered: 0, total: 5, pct: 0 },
     });
-    expect(res.body.data).toMatchObject({ stakeholderType: null, questionCount: 5, answers: [], progress: { answered: 0, total: 5, pct: 0 } });
+    expect(res.body.data).toMatchObject({ stakeholderType: null, questionCount: 5, answers: [], sectionRemarks: [], progress: { answered: 0, total: 5, pct: 0 } });
     expect(res.body.data.scale).toHaveLength(5);
     const codes = (res.body.data.categories as { questions: { code: string }[]; subcategories: { questions: { code: string }[] }[] }[]).flatMap((c) => [
       ...c.questions.map((q) => q.code),
@@ -390,7 +477,7 @@ describe('self assessment', () => {
     expect(await AssessmentModel.countDocuments({ kind: 'SELF', acoId: userA.org._id })).toBe(1);
   });
 
-  it('saves answers through PATCH (validated at the edge and against the form) and submits only when complete', async () => {
+  it('saves answers and section remarks through PATCH (validated at the edge and against the form) and submits only when both are complete', async () => {
     expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.OPT'], rating: 7 }] }), 400, 'VALIDATION');
     expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.OPT'], rating: 4, extra: 1 }] }), 400, 'VALIDATION');
     const bad = await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.REQ'], rating: 4 }] });
@@ -413,6 +500,29 @@ describe('self assessment', () => {
         { questionId: domestic.q['Q.PLAIN'], rating: 2 },
       ],
     });
+    const infra = domestic.section['INFRA'];
+    const proc = domestic.section['PROC'];
+    const noRemarks = expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED');
+    expect(noRemarks.details).toEqual({ missing: [], missingSectionRemarks: [infra, proc] });
+
+    const remarks = `${path()}/remarks`;
+    expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra, remark: 'x'.repeat(2001) }] }), 400, 'VALIDATION');
+    expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra, remark: 'Fine', extra: 1 }] }), 400, 'VALIDATION');
+    expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra }] }), 400, 'VALIDATION');
+    expect(expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: domestic.section['STORAGE'], remark: 'Storage' }] }), 400, 'VALIDATION').details).toMatchObject({
+      issues: [{ path: 'sectionRemarks.0.categoryId' }],
+    });
+    expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: proc, remark: 'One' }, { categoryId: proc, remark: 'Two' }] }), 400, 'VALIDATION');
+    const remarked = await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra, remark: 'x'.repeat(2000) }, { categoryId: proc, remark: '  Processes are clear ' }] });
+    expect(remarked.status, JSON.stringify(remarked.body)).toBe(200);
+    expect(remarked.body.data.sectionRemarks).toEqual([
+      { categoryId: infra, remark: 'x'.repeat(2000) },
+      { categoryId: proc, remark: 'Processes are clear' },
+    ]);
+    // Emptying a remark clears the section, and submit waits for it again.
+    expect((await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra, remark: '' }] })).body.data.sectionRemarks).toEqual([{ categoryId: proc, remark: 'Processes are clear' }]);
+    expect(expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED').details).toEqual({ missing: [], missingSectionRemarks: [infra] });
+    await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: infra, remark: 'Shed space is tight in the peak' }] });
     const done = await userA.post(`${path()}/submit`);
     expect(done.status).toBe(200);
     expect(done.body.data).toMatchObject({ id: selfId, status: 'SUBMITTED', progress: { answered: 5, total: 5, pct: 100 } });
@@ -422,9 +532,14 @@ describe('self assessment', () => {
     expect(idString(audit!.orgId!)).toBe(idString(userA.org._id));
 
     expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.OPT'], rating: 1 }] }), 412, 'PRECONDITION_FAILED');
+    expectError(await userA.patch(remarks).send({ sectionRemarks: [{ categoryId: proc, remark: 'Too late' }] }), 412, 'PRECONDITION_FAILED');
     expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED');
     const after = await userA.get(path());
     expect(after.body.data.answers).toHaveLength(5);
+    expect(after.body.data.sectionRemarks).toEqual([
+      { categoryId: infra, remark: 'Shed space is tight in the peak' },
+      { categoryId: proc, remark: 'Processes are clear' },
+    ]);
     expect(after.body.data.assessment.status).toBe('SUBMITTED');
   });
 
@@ -475,6 +590,7 @@ describe('history, masking, tenancy and export', () => {
       { questionId: domestic.q['Q.LOW']!, na: true },
       { questionId: domestic.q['Q.PLAIN']!, rating: 4 },
     ]);
+    await remarkEverySection(submittedB);
     await submit({ audience: 'participant', subject: 'inv', claims: {}, expiresAt: new Date(Date.now() + 60_000) }, submittedB);
   });
 
@@ -539,6 +655,10 @@ describe('history, masking, tenancy and export', () => {
       expect.objectContaining({ code: 'Q.REQ', rating: 4, comment: 'Good' }),
       expect.objectContaining({ code: 'Q.PLAIN', category: expect.objectContaining({ code: 'PROC' }), rating: 4 }),
     ]);
+    expect(one.body.data.sectionRemarks).toEqual([
+      { categoryId: domestic.section['INFRA'], remark: 'Remarks on Infrastructure' },
+      { categoryId: domestic.section['PROC'], remark: 'Remarks on Processes' },
+    ]);
 
     expect((await superAdmin.patch('/api/v1/settings').send({ revealAssessorIdentity: true })).status).toBe(200);
     try {
@@ -575,16 +695,20 @@ describe('history, masking, tenancy and export', () => {
     expectError(await viewer.get(`/api/v1/assessments/${submittedB}`), 404, 'NOT_FOUND');
   });
 
-  it('exports a cycle as CSV, one line per assessment and form question, within scope', async () => {
+  it('exports a cycle as CSV, one line per assessment and form question with its section’s remark, within scope', async () => {
     const res = await superAdmin.get(`/api/v1/assessments/export?cycleId=${cycle.id}&status=SUBMITTED`);
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.headers['content-disposition']).toContain('assessments-CSQ-2026-1.csv');
     const lines = res.text.trim().split('\n');
-    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp,answerMode,direction,importScore,exportScore');
+    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp,answerMode,direction,importScore,exportScore,sectionRemark');
     // Three SUBMITTED assessments: FF customer (4 questions) + SELF (5) of ACO-A, FF customer (4) of ACO-B.
     expect(lines).toHaveLength(1 + 4 + 5 + 4);
     expect(lines.find((line) => line.includes(submittedB) && line.includes('Q.REQ'))).toContain('Dev Patel,dev@bombayfreight.test,SUBMITTED');
+    // Long format: every line of a section repeats its remark.
+    const linesOfB = lines.filter((line) => line.includes(submittedB));
+    expect(linesOfB.filter((line) => line.includes(',INFRA,')).every((line) => line.endsWith(',Remarks on Infrastructure'))).toBe(true);
+    expect(linesOfB.find((line) => line.includes('Q.PLAIN'))).toMatch(/,PROC,.*,Remarks on Processes$/);
 
     const mine = await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}`);
     const myLines = mine.text.trim().split('\n').slice(1);
@@ -632,7 +756,10 @@ describe('history, masking, tenancy and export', () => {
 
     it('without them an operator still lists its customer assessments, anonymous and unscored even with identities revealed, and their return is 403', async () => {
       expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
-      expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
+      // The 403 carries nothing of the return, its section remarks included.
+      const refused = await adminB.get(`/api/v1/assessments/${submittedB}`);
+      expectError(refused, 403, 'FORBIDDEN');
+      expect(JSON.stringify(refused.body)).not.toContain('Remarks on');
       await withRevealSetting(async () => {
         expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
         expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
@@ -682,9 +809,10 @@ describe('history, masking, tenancy and export', () => {
         const res = await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}${kind}`);
         expect(res.status).toBe(200);
         const lines = res.text.trim().split('\n').slice(1);
-        // ACO-B's DOMESTIC self-assessment, five questions.
+        // ACO-B's DOMESTIC self-assessment, five questions; no customer line, so no customer remark either.
         expect(lines).toHaveLength(5);
         expect(lines.every((line) => line.includes(',ACO-B,SELF,'))).toBe(true);
+        expect(res.text).not.toContain('Remarks on');
       }
 
       await grantTasks('ACO_ADMIN', ['assessments.details']);
@@ -696,6 +824,9 @@ describe('history, masking, tenancy and export', () => {
         // The score column (the 11th) is empty; the ratings are there.
         expect(lines.map((line) => line.split(',')[10])).toEqual(['', '', '', '']);
         expect(lines.find((line) => line.includes('Q.OPT'))).toContain(',5,false,');
+        // With details, the customer lines carry their section remarks.
+        expect(lines.find((line) => line.includes('Q.OPT'))).toMatch(/,Remarks on Infrastructure$/);
+        expect((await adminB.get(`/api/v1/assessments/${submittedB}`)).body.data.sectionRemarks).toHaveLength(2);
       } finally {
         await revokeTasks('ACO_ADMIN', ['assessments.details']);
       }

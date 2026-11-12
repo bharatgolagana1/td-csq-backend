@@ -9,7 +9,7 @@ import { systemContext, type SystemContext } from '../../core/auth/system.js';
 import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
-import type { AssessmentFormDto, DraftDto, PatchAnswersResult, ReadinessDto } from '../assessments/assessments.schemas.js';
+import type { AssessmentFormDto, DraftDto, PatchAnswersResult, PatchSectionRemarksResult, ReadinessDto } from '../assessments/assessments.schemas.js';
 import { send } from '../notifications/notifications.service.js';
 
 import {
@@ -33,9 +33,10 @@ import {
   bumpStarted,
   getOrCreateAssessment,
   patchAssessmentAnswers,
+  patchAssessmentRemarks,
   submitAssessment,
 } from './invitations.peers.js';
-import type { AnswersInput, OtpDto, ParticipantStatusDto, SubmitDto, VerifyDto } from './invitations.schemas.js';
+import type { AnswersInput, OtpDto, ParticipantStatusDto, RemarksInput, SubmitDto, VerifyDto } from './invitations.schemas.js';
 import { getByToken, requireCycle } from './invitations.service.js';
 import { otpIpLimiter } from './otp-limiter.js';
 
@@ -294,6 +295,11 @@ export async function participantDraft(token: string, link: LinkSession): Promis
 export async function participantPatchAnswers(token: string, link: LinkSession, input: AnswersInput): Promise<PatchAnswersResult> {
   const { assessmentId } = await requireLinkedInvitation(token, link);
   return patchAssessmentAnswers(assessmentId, input.answers);
+}
+
+export async function participantPatchSectionRemarks(token: string, link: LinkSession, input: RemarksInput): Promise<PatchSectionRemarksResult> {
+  const { assessmentId } = await requireLinkedInvitation(token, link);
+  return patchAssessmentRemarks(assessmentId, input.sectionRemarks);
 }
 
 export async function participantReadiness(token: string, link: LinkSession): Promise<ReadinessDto> {

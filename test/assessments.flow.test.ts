@@ -15,7 +15,7 @@ import { InvitationModel, type InvitationDoc } from '../src/modules/invitations/
 import { createPendingForSamples } from '../src/modules/invitations/invitations.service.js';
 import { seedSurveys } from '../src/seed/surveys.js';
 
-import { createTestCustomer, createTestCycle, type TestCycle } from './assessments.fixtures.js';
+import { createTestCustomer, createTestCycle, remarkEverySection, remarksFor, type TestCycle } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { airportIdByIata, grantTasks, revokeTasks } from './helpers/fixtures.js';
 
@@ -73,6 +73,7 @@ describe('participant flow', () => {
   let assessmentId: string;
   let link: LinkSession;
   let questions: FormQuestionView[];
+  let sections: string[];
 
   it('verify → the invitation gets its assessment (idempotent) and the link session names it', async () => {
     const created = await getOrCreateForInvitation(invitation);
@@ -104,14 +105,15 @@ describe('participant flow', () => {
     expect(form.scale.map((step) => step.value)).toEqual([1, 2, 3, 4, 5]);
     expect(form.categories.map((category) => category.code)).toEqual(['INFRA', 'SEC', 'PROC', 'TRADE']);
     questions = questionsOf(form);
+    sections = form.categories.map((category) => category.id);
     expect(questions).toHaveLength(27);
     expect(form.questionCount).toBe(27);
     expect(form.progress).toEqual({ answered: 0, total: 27, pct: 0 });
     const draft = await getDraft(assessmentId);
-    expect(draft).toMatchObject({ id: assessmentId, status: 'DRAFT', answers: [], progress: { answered: 0, total: 27, pct: 0 }, lastSavedAt: null, submittedAt: null });
+    expect(draft).toMatchObject({ id: assessmentId, status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 27, pct: 0 }, lastSavedAt: null, submittedAt: null });
   });
 
-  it('autosave in batches → progress climbs; readiness lists what is left; submit waits for 100 %', async () => {
+  it('autosave in batches → progress climbs; readiness lists what is left (answers and section remarks); submit waits for 100 %', async () => {
     const [first, second, third] = questions;
     expect(first?.commentMode).toBe('REQUIRED_ON_LOW');
     // A Fair rating needs its comment (and may carry follow-up options).
@@ -124,13 +126,16 @@ describe('participant flow', () => {
     expect(await patchAnswers(assessmentId, middle)).toMatchObject({ answered: 20, total: 27, pct: 74 });
 
     const ready = await readiness(assessmentId);
-    expect(ready).toEqual({ answered: 20, total: 27, missing: questions.slice(20).map((question) => question.id), complete: false });
-    await expect(submit(link, assessmentId)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', details: { missing: ready.missing } });
+    expect(ready).toEqual({ answered: 20, total: 27, missing: questions.slice(20).map((question) => question.id), missingSectionRemarks: sections, complete: false });
+    await expect(submit(link, assessmentId)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', details: { missing: ready.missing, missingSectionRemarks: sections } });
     expect((await getDraft(assessmentId)).status).toBe('DRAFT');
   });
 
   it('submit → SUBMITTED and locked, the audit row, the participant counted as completed, and the row scoring reads', async () => {
     await patchAnswers(assessmentId, questions.slice(20).map((question) => ({ questionId: question.id, rating: 4 })));
+    expect(await readiness(assessmentId)).toMatchObject({ missing: [], missingSectionRemarks: sections, complete: false });
+    await expect(submit(link, assessmentId)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', details: { missingSectionRemarks: sections } });
+    await remarkEverySection(assessmentId);
     expect((await readiness(assessmentId)).complete).toBe(true);
     const result = await submit(link, assessmentId);
     expect(result.status).toBe('SUBMITTED');
@@ -165,6 +170,8 @@ describe('participant flow', () => {
     expect(one.status).toBe(200);
     expect(one.body.data.answers).toHaveLength(27);
     expect(one.body.data.answers[0]).toMatchObject({ code: questions[0]!.code, rating: 2, comment: 'Acceptance queue is slow' });
+    expect((one.body.data.sectionRemarks as { categoryId: string; remark: string }[]).map((entry) => entry.categoryId)).toEqual(sections);
+    expect(one.body.data.sectionRemarks[0].remark).toMatch(/^Remarks on /);
   });
 });
 
@@ -181,6 +188,9 @@ describe('self-assessment flow', () => {
     const saved = await operator.patch(`${path()}/answers`).send({ answers: questions.map((question, index) => (index === 5 ? { questionId: question.id, na: true } : { questionId: question.id, rating: 5 })) });
     expect(saved.status).toBe(200);
     expect(saved.body.data).toMatchObject({ answered: 27, total: 27, pct: 100 });
+    const remarked = await operator.patch(`${path()}/remarks`).send({ sectionRemarks: remarksFor(opened.body.data) });
+    expect(remarked.status, JSON.stringify(remarked.body)).toBe(200);
+    expect(remarked.body.data.sectionRemarks).toHaveLength(4);
 
     const done = await operator.post(`${path()}/submit`);
     expect(done.status).toBe(200);
@@ -190,11 +200,13 @@ describe('self-assessment flow', () => {
     expect(await listSubmitted(cycle.id, acoId)).toHaveLength(2);
   });
 
-  it('the export carries both submissions, one line per question', async () => {
+  it('the export carries both submissions, one line per question, each with its section’s remark', async () => {
     const res = await operator.get(`/api/v1/assessments/export?cycleId=${cycle.id}`);
     expect(res.status).toBe(200);
     expect(res.headers['content-disposition']).toContain('assessments-FLOW-1.csv');
-    expect(res.text.trim().split('\n')).toHaveLength(1 + 27 + 27);
+    const lines = res.text.trim().split('\n');
+    expect(lines).toHaveLength(1 + 27 + 27);
+    expect(lines.slice(1).every((line) => /,Remarks on [^,]+$/.test(line))).toBe(true);
   });
 });
 

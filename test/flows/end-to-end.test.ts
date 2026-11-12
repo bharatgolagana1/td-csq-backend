@@ -23,6 +23,7 @@ import { sendDueReminders } from '../../src/modules/invitations/invitations.serv
 import { registrationRateLimit } from '../../src/modules/onboarding/onboarding.ratelimit.js';
 import { getScores } from '../../src/modules/scoring/scoring.service.js';
 import { seedSurveys } from '../../src/seed/surveys.js';
+import { remarksFor } from '../assessments.fixtures.js';
 import { createTestApp, tokenFor, type TestApp, type TestUser } from '../helpers/app.js';
 import { airportIdByIata, expectError, grantTasks, operatorPayload } from '../helpers/fixtures.js';
 import { answersFor, formQuestionIds } from '../invitations.fixtures.js';
@@ -148,7 +149,11 @@ function patchAnswers(token: string, session: string, answers: unknown[]): Test 
   return t.anon.patch(`${PUBLIC}/${token}/answers`).set(LINK_HEADER, session).send({ answers });
 }
 
-/** One participant end to end through the link: open, code, verify, form, every answer at `rating`, submit. */
+function patchRemarks(token: string, session: string, sectionRemarks: unknown[]): Test {
+  return t.anon.patch(`${PUBLIC}/${token}/remarks`).set(LINK_HEADER, session).send({ sectionRemarks });
+}
+
+/** One participant end to end through the link: open, code, verify, form, every answer at `rating`, a remark per section, submit. */
 async function completeThroughLink(email: string, rating: number, expectedType: 'FF' | 'CB'): Promise<void> {
   const token = tokens.get(email);
   if (!token) throw new Error(`No link for ${email}`);
@@ -166,6 +171,8 @@ async function completeThroughLink(email: string, rating: number, expectedType: 
   const saved = await patchAnswers(token, session, answersFor(formQuestionIds(form.body.data), rating));
   expect(saved.status, JSON.stringify(saved.body)).toBe(200);
   expect(saved.body.data).toMatchObject({ answered: 23, total: 23, pct: 100 });
+  const remarked = await patchRemarks(token, session, remarksFor(form.body.data));
+  expect(remarked.status, JSON.stringify(remarked.body)).toBe(200);
   const submit = await t.anon.post(`${PUBLIC}/${token}/submit`).set(LINK_HEADER, session);
   expect(submit.status, JSON.stringify(submit.body)).toBe(200);
   expect(submit.body.data).toMatchObject({ state: 'SUBMITTED', assessment: { status: 'SUBMITTED', customerType: expectedType } });
@@ -573,7 +580,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expectError(await t.anon.post(`${PUBLIC}/${token}/verify`).send({ otp: code }), 400, 'OTP_INVALID');
   });
 
-  it('15 · the form applies its rules while the participant answers; submit waits for every question, then locks', async () => {
+  it('15 · the form applies its rules while the participant answers; submit waits for every question and a remark per section, then locks', async () => {
     const token = tokens.get('anita@alphaff.test')!;
     const session = sessions.get('anita@alphaff.test')!;
     const form = await t.anon.get(`${PUBLIC}/${token}/form`).set(LINK_HEADER, session);
@@ -606,13 +613,19 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     ]);
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(saved.body.data).toMatchObject({ answered: 2, total: 23 });
+    const sections = (form.body.data.categories as { id: string }[]).map((category) => category.id);
     const readiness = await t.anon.get(`${PUBLIC}/${token}/readiness`).set(LINK_HEADER, session);
-    expect(readiness.body.data).toMatchObject({ answered: 2, total: 23, complete: false });
+    expect(readiness.body.data).toMatchObject({ answered: 2, total: 23, missingSectionRemarks: sections, complete: false });
     expect(readiness.body.data.missing).toEqual(rest);
     expect(expectError(await t.anon.post(`${PUBLIC}/${token}/submit`).set(LINK_HEADER, session), 412, 'PRECONDITION_FAILED').details).toMatchObject({ missing: rest });
 
     const done = await patchAnswers(token, session, answersFor(rest, 4));
     expect(done.body.data).toMatchObject({ answered: 23, total: 23, pct: 100 });
+    // Every question answered: the four sections still wait for their remarks.
+    expect(expectError(await t.anon.post(`${PUBLIC}/${token}/submit`).set(LINK_HEADER, session), 412, 'PRECONDITION_FAILED').details).toEqual({ missing: [], missingSectionRemarks: sections });
+    const remarked = await patchRemarks(token, session, remarksFor(form.body.data));
+    expect(remarked.status, JSON.stringify(remarked.body)).toBe(200);
+    expect((await t.anon.get(`${PUBLIC}/${token}/readiness`).set(LINK_HEADER, session)).body.data).toMatchObject({ missing: [], missingSectionRemarks: [], complete: true });
     const draft = await t.anon.get(`${PUBLIC}/${token}/draft`).set(LINK_HEADER, session);
     expect(draft.body.data).toMatchObject({ status: 'DRAFT', progress: { answered: 23, pct: 100 } });
     expect((draft.body.data.answers as { questionId: string; na: boolean; rating: number | null }[]).find((answer) => answer.questionId === second)).toMatchObject({ na: true, rating: null });
@@ -624,6 +637,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
 
     // Read-only from here; the page says so.
     expectError(await patchAnswers(token, session, [{ questionId: first, rating: 5 }]), 412, 'PRECONDITION_FAILED');
+    expectError(await patchRemarks(token, session, [{ categoryId: sections[0], remark: 'Afterthought' }]), 412, 'PRECONDITION_FAILED');
     expectError(await t.anon.post(`${PUBLIC}/${token}/submit`).set(LINK_HEADER, session), 412, 'PRECONDITION_FAILED');
     expect((await t.anon.get(`${PUBLIC}/${token}/draft`).set(LINK_HEADER, session)).body.data.status).toBe('SUBMITTED');
     expect((await t.anon.get(`${PUBLIC}/${token}`)).body.data.state).toBe('SUBMITTED');
@@ -666,6 +680,9 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     const saved = await adminA.patch(`${path}/answers`).send({ answers: questionIds.map((questionId, index) => (index === 3 ? { questionId, na: true } : { questionId, rating: 5 })) });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(saved.body.data).toMatchObject({ answered: 23, total: 23, pct: 100 });
+    expectError(await adminA.post(`${path}/submit`), 412, 'PRECONDITION_FAILED');
+    const remarked = await adminA.patch(`${path}/remarks`).send({ sectionRemarks: remarksFor(opened.body.data) });
+    expect(remarked.status, JSON.stringify(remarked.body)).toBe(200);
     const done = await adminA.post(`${path}/submit`);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(done.body.data).toMatchObject({ kind: 'SELF', status: 'SUBMITTED' });

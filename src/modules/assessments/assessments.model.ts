@@ -43,6 +43,16 @@ export interface StoredAnswer {
   followUp: string[];
 }
 
+/**
+ * The remark on one section (form category): free text about the section as
+ * a whole, saved apart from the answers. At most one per category whatever
+ * the answer mode; a cleared remark is removed, never stored empty.
+ */
+export interface StoredSectionRemark {
+  categoryId: string;
+  remark: string;
+}
+
 export interface AssessmentDoc {
   _id: Types.ObjectId;
   cycleId: Types.ObjectId;
@@ -61,6 +71,8 @@ export interface AssessmentDoc {
   userId: Types.ObjectId | null;
   status: AssessmentStatus;
   answers: StoredAnswer[];
+  /** Absent on documents written before section remarks existed. */
+  sectionRemarks?: StoredSectionRemark[];
   answeredCount: number;
   questionCount: number;
   startedAt: Date;
@@ -82,6 +94,14 @@ const answerSchema = new Schema<StoredAnswer>(
   { _id: false },
 );
 
+const sectionRemarkSchema = new Schema<StoredSectionRemark>(
+  {
+    categoryId: { type: String, required: true },
+    remark: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const schema = new Schema<AssessmentDoc>(
   {
     cycleId: { type: Schema.Types.ObjectId, ref: 'Cycle', required: true },
@@ -97,6 +117,7 @@ const schema = new Schema<AssessmentDoc>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     status: { type: String, enum: ASSESSMENT_STATUSES, required: true, default: 'DRAFT' },
     answers: { type: [answerSchema], required: true, default: () => [] },
+    sectionRemarks: { type: [sectionRemarkSchema], required: true, default: () => [] },
     answeredCount: { type: Number, required: true, default: 0 },
     questionCount: { type: Number, required: true, default: 0 },
     startedAt: { type: Date, required: true },

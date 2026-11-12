@@ -1,7 +1,7 @@
 // Import / export answers end to end over the real modules: a SINGLE cycle
 // and an IMPORT_EXPORT cycle with the same two operators (DEL, BOM). Covers
-// the assessments inheriting the cycle's mode (answers per direction,
-// readiness, submit, history), scoring per direction (rows, ranks, airports,
+// the assessments inheriting the cycle's mode (answers per direction, one
+// remark per section whatever the mode, readiness, submit, history), scoring per direction (rows, ranks, airports,
 // a mode switch dropping the other direction's rows, assessments of the other
 // mode ignored), the reports' direction resolution and the boot migration of
 // the score indexes.
@@ -11,7 +11,7 @@ import { clearEventHandlers } from '../src/core/events.js';
 import { idString, newId, toId } from '../src/core/ids.js';
 import type { AnswerInput } from '../src/modules/assessments/assessments.form.js';
 import { AssessmentModel } from '../src/modules/assessments/assessments.model.js';
-import { getOrCreateForInvitation, getOrCreateSelf, patchAnswers, readiness, submit } from '../src/modules/assessments/assessments.service.js';
+import { getOrCreateForInvitation, getOrCreateSelf, patchAnswers, patchSectionRemarks, readiness, submit } from '../src/modules/assessments/assessments.service.js';
 import { CycleModel } from '../src/modules/cycles/cycles.model.js';
 import type { OrganisationDoc } from '../src/modules/organisations/organisations.model.js';
 import { AirportScoreModel } from '../src/modules/scoring/airport-scores.model.js';
@@ -20,7 +20,7 @@ import { ScoreModel } from '../src/modules/scoring/scores.model.js';
 import { getScores, nationalTable, runCycle } from '../src/modules/scoring/scoring.service.js';
 import { SettingsModel } from '../src/modules/settings/settings.model.js';
 
-import { createTestCustomer, createTestCycle, createTestSurvey, ctxOf, type TestCycle, type TestSurvey } from './assessments.fixtures.js';
+import { createTestCustomer, createTestCycle, createTestSurvey, ctxOf, remarkEverySection, type TestCycle, type TestSurvey } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { airportIdByIata, createTestOperator, expectError, grantTasks, revokeTasks } from './helpers/fixtures.js';
 
@@ -53,10 +53,11 @@ function invitation(cycle: TestCycle, acoId: string, customerId: string) {
   return { _id: newId(), cycleId: cycle.id, acoId, customerId, surveyType: 'DOMESTIC' as const };
 }
 
-/** A customer assessment answered and submitted through the service. */
+/** A customer assessment answered, remarked and submitted through the service. */
 async function submitCustomer(cycle: TestCycle, acoId: string, customerId: string, batches: AnswerInput[][]): Promise<string> {
   const { id } = await getOrCreateForInvitation(invitation(cycle, acoId, customerId));
   for (const batch of batches) await patchAnswers(id, batch);
+  await remarkEverySection(id);
   await submit(ctxOf(superAdmin), id);
   return id;
 }
@@ -122,7 +123,15 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
     // A second import batch replaces the first in place; export lands beside it.
     await patchAnswers(splitA, answers(5, 'IMPORT'));
     expect(await patchAnswers(splitA, answers(2, 'EXPORT'))).toMatchObject({ answered: 8, total: 8, pct: 100 });
-    expect(await readiness(splitA)).toMatchObject({ answered: 8, total: 8, missing: [], complete: true });
+    // One remark per section, not per direction.
+    const sections = [survey.section['INFRA'], survey.section['PROC']];
+    expect(await readiness(splitA)).toEqual({ answered: 8, total: 8, missing: [], missingSectionRemarks: sections, complete: false });
+    await expect(submit(ctxOf(superAdmin), splitA)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', details: { missing: [], missingSectionRemarks: sections } });
+    await patchSectionRemarks(splitA, [
+      { categoryId: survey.section['INFRA']!, remark: 'Import sheds fine; export dock congested' },
+      { categoryId: survey.section['PROC']!, remark: 'Same paperwork both ways' },
+    ]);
+    expect(await readiness(splitA)).toEqual({ answered: 8, total: 8, missing: [], missingSectionRemarks: [], complete: true });
     expect(await submit(ctxOf(superAdmin), splitA)).toMatchObject({ status: 'SUBMITTED', answerMode: 'IMPORT_EXPORT', progress: { answered: 8, total: 8 } });
 
     await submitCustomer(split, acoB, customerB, [answers(3, 'IMPORT'), answers(4, 'EXPORT')]);
@@ -138,6 +147,14 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
     const self = await getOrCreateSelf(ctxOf(adminA), split.id, 'DOMESTIC');
     // Five active questions on the self form, twice.
     expect(self).toMatchObject({ kind: 'SELF', answerMode: 'IMPORT_EXPORT', progress: { answered: 0, total: 10 } });
+    // Its sections still take one remark each, without a direction.
+    const remarks = `/api/v1/assessments/self/${split.id}/DOMESTIC/remarks`;
+    expectError(await adminA.patch(remarks).send({ sectionRemarks: [{ categoryId: survey.section['INFRA'], remark: 'Import side', direction: 'IMPORT' }] }), 400, 'VALIDATION');
+    const saved = await adminA.patch(remarks).send({ sectionRemarks: [{ categoryId: survey.section['INFRA'], remark: 'New racks in the import shed' }] });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const opened = await adminA.get(`/api/v1/assessments/self/${split.id}/DOMESTIC`);
+    expect(opened.body.data.sectionRemarks).toEqual([{ categoryId: survey.section['INFRA'], remark: 'New racks in the import shed' }]);
+    expect(await readiness(self.id)).toMatchObject({ total: 10, missingSectionRemarks: [survey.section['PROC']], complete: false });
   });
 
   it('shows a score per direction in the history and every answer per direction in the read-only return', async () => {
@@ -151,6 +168,19 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
     expect(detail.body.data.answerMode).toBe('IMPORT_EXPORT');
     const lines = detail.body.data.answers as { code: string; direction?: string; rating: number | null }[];
     expect(lines.map((line) => [line.code, line.direction, line.rating])).toEqual(FF_QUESTIONS.flatMap((code) => [[code, 'IMPORT', 5], [code, 'EXPORT', 2]]));
+    expect(detail.body.data.sectionRemarks).toEqual([
+      { categoryId: survey.section['INFRA'], remark: 'Import sheds fine; export dock congested' },
+      { categoryId: survey.section['PROC'], remark: 'Same paperwork both ways' },
+    ]);
+
+    // The export repeats a section's remark on its import and its export lines.
+    const csv = await superAdmin.get(`/api/v1/assessments/export?cycleId=${split.id}&acoId=${acoA}&kind=CUSTOMER&status=SUBMITTED`);
+    expect(csv.status).toBe(200);
+    const rows = csv.text.trim().split('\n').slice(1).filter((line) => line.startsWith(splitA));
+    expect(rows).toHaveLength(8);
+    expect(rows.filter((line) => line.includes(',INFRA,')).map((line) => line.split(',').slice(-4, -3)[0])).toEqual(['IMPORT', 'EXPORT', 'IMPORT', 'EXPORT', 'IMPORT', 'EXPORT']);
+    expect(rows.filter((line) => line.includes(',INFRA,')).every((line) => line.endsWith(',Import sheds fine; export dock congested'))).toBe(true);
+    expect(rows.filter((line) => line.includes(',PROC,')).every((line) => line.endsWith(',Same paperwork both ways'))).toBe(true);
 
     const singleRows = await superAdmin.get(`/api/v1/assessments?cycleId=${single.id}&status=SUBMITTED&acoId=${acoA}`);
     expect(singleRows.body.data[0]).toMatchObject({ score: 4, importScore: null, exportScore: null });

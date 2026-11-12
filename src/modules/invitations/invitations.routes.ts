@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { assertTask } from '../../core/auth/rbac.js';
 import { route } from '../../core/http.js';
-import { assessmentFormResponse, draftResponse, patchAnswersResponse, readinessResponse } from '../assessments/assessments.schemas.js';
+import { assessmentFormResponse, draftResponse, patchAnswersResponse, patchSectionRemarksResponse, readinessResponse } from '../assessments/assessments.schemas.js';
 
 import {
   answersBody,
@@ -11,6 +11,7 @@ import {
   invitationResponse,
   otpResponse,
   participantStatusResponse,
+  remarksBody,
   submitResponse,
   tokenParams,
   verifyBody,
@@ -21,6 +22,7 @@ import {
   participantDraft,
   participantForm,
   participantPatchAnswers,
+  participantPatchSectionRemarks,
   participantReadiness,
   participantStatus,
   participantSubmit,
@@ -117,7 +119,7 @@ export const invitationsRoutes = [
     method: 'get',
     path: '/public/assess/:token/draft',
     policy: PARTICIPANT,
-    summary: 'The answers saved so far',
+    summary: 'The answers and section remarks saved so far',
     params: tokenParams,
     response: draftResponse,
     handler: ({ params, link }) => participantDraft(params.token, link),
@@ -133,10 +135,20 @@ export const invitationsRoutes = [
     handler: ({ params, link, body }) => participantPatchAnswers(params.token, link, body),
   }),
   route({
+    method: 'patch',
+    path: '/public/assess/:token/remarks',
+    policy: PARTICIPANT,
+    summary: 'Autosave section remarks: merge by category (an empty remark clears it); 412 once submitted',
+    params: tokenParams,
+    body: remarksBody,
+    response: patchSectionRemarksResponse,
+    handler: ({ params, link, body }) => participantPatchSectionRemarks(params.token, link, body),
+  }),
+  route({
     method: 'get',
     path: '/public/assess/:token/readiness',
     policy: PARTICIPANT,
-    summary: 'What is still missing before the assessment can be submitted',
+    summary: 'What is still missing before the assessment can be submitted: answers and section remarks',
     params: tokenParams,
     response: readinessResponse,
     handler: ({ params, link }) => participantReadiness(params.token, link),

@@ -370,6 +370,8 @@ describe('POST /public/assess/:token/otp and /verify', () => {
   });
 
   describe('with the link session', () => {
+    /** The form's sections (categories), in form order. */
+    let sections: string[] = [];
     const withSession = (path: string) => ({
       get: () => t.anon.get(`${PUBLIC}/${token}${path}`).set(LINK_HEADER, sessionToken),
       patch: () => t.anon.patch(`${PUBLIC}/${token}${path}`).set(LINK_HEADER, sessionToken),
@@ -403,10 +405,12 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(form.body.data.assessment).toMatchObject({ kind: 'CUSTOMER', status: 'DRAFT', customerType: 'FF' });
       expect(formQuestionIds(form.body.data).sort()).toEqual([...domestic.questionIds].sort());
       expect(form.body.data.progress).toEqual({ answered: 0, total: 3, pct: 0 });
+      sections = (form.body.data.categories as { id: string }[]).map((category) => category.id);
+      expect(sections).toHaveLength(2);
 
       const draft = await withSession('/draft').get();
       expect(draft.status).toBe(200);
-      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], progress: { answered: 0, total: 3 } });
+      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 3 } });
     });
 
     it('autosaves by merge, reports readiness and refuses to submit while questions are missing', async () => {
@@ -416,7 +420,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(partial.body.data).toMatchObject({ answered: 2, total: 3 });
 
       const readiness = await withSession('/readiness').get();
-      expect(readiness.body.data).toEqual({ answered: 2, total: 3, missing: [q3], complete: false });
+      expect(readiness.body.data).toEqual({ answered: 2, total: 3, missing: [q3], missingSectionRemarks: sections, complete: false });
       expectError(await withSession('/submit').post(), 412, 'PRECONDITION_FAILED');
       expectError(await withSession('/answers').patch().send({ answers: [{ questionId: 'nope', rating: 3 }] }), 400, 'VALIDATION');
 
@@ -424,7 +428,37 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(rest.body.data).toMatchObject({ answered: 3, total: 3, pct: 100 });
       const draft = await withSession('/draft').get();
       expect(draft.body.data.answers).toHaveLength(3);
-      expect((await withSession('/readiness').get()).body.data.complete).toBe(true);
+      // Every question answered; the sections still need their remarks.
+      expect((await withSession('/readiness').get()).body.data).toEqual({ answered: 3, total: 3, missing: [], missingSectionRemarks: sections, complete: false });
+    });
+
+    it('saves section remarks by merge (an empty one clears it), refuses an unknown or repeated section, and submit waits for a remark on every section', async () => {
+      const [infra, proc] = sections as [string, string];
+      expectError(await t.anon.patch(`${PUBLIC}/${token}/remarks`).send({ sectionRemarks: [] }), 401, 'UNAUTHENTICATED');
+      expectError(await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: infra, remark: 'x'.repeat(2001) }] }), 400, 'VALIDATION');
+      expectError(await withSession('/remarks').patch().send({ remarks: [] }), 400, 'VALIDATION');
+      const unknown = expectError(await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: idString(newId()), remark: 'Elsewhere' }] }), 400, 'VALIDATION');
+      expect(unknown.details).toMatchObject({ issues: [{ path: 'sectionRemarks.0.categoryId' }] });
+      expectError(await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: infra, remark: 'One' }, { categoryId: infra, remark: 'Two' }] }), 400, 'VALIDATION');
+
+      const saved = await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: infra, remark: ' Storage is well organised ' }, { categoryId: proc, remark: 'Draft note' }] });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body.data.sectionRemarks).toEqual([
+        { categoryId: infra, remark: 'Storage is well organised' },
+        { categoryId: proc, remark: 'Draft note' },
+      ]);
+      expect(typeof saved.body.data.lastSavedAt).toBe('string');
+      const cleared = await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: proc, remark: '   ' }] });
+      expect(cleared.body.data.sectionRemarks).toEqual([{ categoryId: infra, remark: 'Storage is well organised' }]);
+      expect((await withSession('/draft').get()).body.data.sectionRemarks).toEqual([{ categoryId: infra, remark: 'Storage is well organised' }]);
+      expect((await withSession('/readiness').get()).body.data).toEqual({ answered: 3, total: 3, missing: [], missingSectionRemarks: [proc], complete: false });
+
+      const refused = expectError(await withSession('/submit').post(), 412, 'PRECONDITION_FAILED');
+      expect(refused.details).toEqual({ missing: [], missingSectionRemarks: [proc] });
+      expect((await InvitationModel.findById(invitation._id).lean())?.state).toBe('VERIFIED');
+
+      await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: proc, remark: 'Gate paperwork is quick' }] });
+      expect((await withSession('/readiness').get()).body.data).toEqual({ answered: 3, total: 3, missing: [], missingSectionRemarks: [], complete: true });
     });
 
     it('submits: assessment and invitation SUBMITTED, participant completed, thank-you e-mail, answers read-only', async () => {
@@ -444,7 +478,10 @@ describe('POST /public/assess/:token/otp and /verify', () => {
 
       expectError(await withSession('/submit').post(), 412, 'PRECONDITION_FAILED');
       expectError(await withSession('/answers').patch().send({ answers: [{ questionId: domestic.questionIds[0], rating: 1 }] }), 412, 'PRECONDITION_FAILED');
-      expect((await withSession('/draft').get()).body.data.status).toBe('SUBMITTED');
+      expectError(await withSession('/remarks').patch().send({ sectionRemarks: [{ categoryId: sections[0], remark: 'One more thing' }] }), 412, 'PRECONDITION_FAILED');
+      const after = await withSession('/draft').get();
+      expect(after.body.data.status).toBe('SUBMITTED');
+      expect(after.body.data.sectionRemarks).toHaveLength(2);
       const status = await t.anon.get(`${PUBLIC}/${token}`);
       expect(status.body.data.state).toBe('SUBMITTED');
       expect(status.body.data.submittedAt).toBeTruthy();
@@ -673,6 +710,7 @@ describe('cross-ACO isolation', () => {
     });
     expectError(await t.anon.get(`${PUBLIC}/${bToken}/form`).set(LINK_HEADER, aSession), 404, 'NOT_FOUND');
     expectError(await t.anon.get(`${PUBLIC}/${bToken}/draft`).set(LINK_HEADER, aSession), 404, 'NOT_FOUND');
+    expectError(await t.anon.patch(`${PUBLIC}/${bToken}/remarks`).set(LINK_HEADER, aSession).send({ sectionRemarks: [] }), 404, 'NOT_FOUND');
     expectError(await t.anon.post(`${PUBLIC}/${bToken}/submit`).set(LINK_HEADER, aSession), 404, 'NOT_FOUND');
   });
 

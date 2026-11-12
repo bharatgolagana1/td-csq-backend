@@ -1,11 +1,14 @@
 // The demo's answer generator: one answer per question on a SINGLE form, an
 // IMPORT and an EXPORT answer per question on an IMPORT_EXPORT one (export a
-// touch lower), every batch valid against the form rules.
+// touch lower), every batch valid against the form rules; and one remark per
+// section.
 import { describe, expect, it } from 'vitest';
 
-import { readinessOf, validateAnswers, type AssessmentForm, type FormQuestion } from '../../../src/modules/assessments/assessments.form.js';
+import { missingSectionRemarks, readinessOf, validateAnswers, type AssessmentForm, type FormQuestion } from '../../../src/modules/assessments/assessments.form.js';
+import { sectionRemarkInputSchema } from '../../../src/modules/assessments/assessments.schemas.js';
+import { GENERIC_SECTION_REMARKS, SECTION_REMARKS, SELF_SECTION_REMARKS } from '../../../src/seed/demo/names.js';
 import { Rng } from '../../../src/seed/demo/prng.js';
-import { generateAnswers, type RatingProfile } from '../../../src/seed/demo/responses.js';
+import { generateAnswers, generateSectionRemarks, type RatingProfile } from '../../../src/seed/demo/responses.js';
 
 function question(id: string, order: number): FormQuestion {
   return { id, categoryId: 'c1', subcategoryId: null, code: id.toUpperCase(), text: id, help: null, order, weightPct: null, mandatory: true, commentMode: 'OPTIONAL', followUp: null };
@@ -60,5 +63,22 @@ describe('generateAnswers', () => {
       return ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length;
     };
     expect(mean('EXPORT')).toBeLessThan(mean('IMPORT'));
+  });
+});
+
+describe('generateSectionRemarks', () => {
+  it('writes one remark per section from its head’s pool, the generic pool for an unknown head, and every one validates', () => {
+    const base = formOf(2);
+    const form: AssessmentForm = { ...base, categories: [...base.categories, { id: 'c2', code: 'NEW', name: 'A new head', order: 2, weightPct: null, questions: [question('q9', 1)], subcategories: [] }] };
+    const remarks = generateSectionRemarks(form, new Rng('remarks'), { self: false });
+    expect(remarks.map((entry) => entry.categoryId)).toEqual(['c1', 'c2']);
+    expect(SECTION_REMARKS['INFRA']).toContain(remarks[0]!.remark);
+    expect(GENERIC_SECTION_REMARKS).toContain(remarks[1]!.remark);
+    expect(missingSectionRemarks(form, remarks)).toEqual([]);
+    expect(remarks.every((entry) => sectionRemarkInputSchema.safeParse(entry).success)).toBe(true);
+    expect(generateSectionRemarks(form, new Rng('remarks'), { self: false })).toEqual(remarks);
+
+    const self = generateSectionRemarks(form, new Rng('remarks'), { self: true });
+    expect(SELF_SECTION_REMARKS['INFRA']).toContain(self[0]!.remark);
   });
 });
