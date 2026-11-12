@@ -172,19 +172,24 @@ database authorises.
   marketshare.view marketshare.manage · cycles.view cycles.manage
   cycles.publish cycles.operate · customers.view customers.manage customers.delete ·
   sampling.view sampling.manage sampling.lock sampling.unlock ·
-  assessments.self assessments.view · reports.operator reports.airport
+  assessments.self assessments.view assessments.scores assessments.details ·
+  reports.operator reports.airport
   reports.national · monitoring.view · users.view users.manage · roles.view
   roles.manage · notifications.view notifications.send · audit.view ·
   settings.view settings.manage`.
 - `role_tasks` `{ roleId, taskId, enabled }` — the Role → Task matrix. Seeded
   defaults: SUPER_ADMIN everything; ACFI_ANALYST all `*.view` + reports +
-  monitoring; ACO_ADMIN cycles.view/customers/sampling (incl. lock)/
+  monitoring + assessments.scores/assessments.details; ACO_ADMIN
+  cycles.view/customers/sampling (incl. lock)/
   assessments.self/assessments.view/reports.operator/users.view/users.manage
   (own org)/settings.view; ACO_USER cycles.view, customers.view,
   sampling.view, assessments.self, reports.operator; AIRPORT_ADMIN/VIEWER
   cycles.view, reports.airport (+ users.view/users.manage for admin). Every
   operator and airport role holds `cycles.view` because the cycle strip,
-  sampling and dashboard all start from `GET /cycles/current`. Saving the matrix bumps `settings.rbacVersion`; the RBAC cache keys
+  sampling and dashboard all start from `GET /cycles/current`. No operator
+  or airport role holds `assessments.scores` or `assessments.details` by
+  default (individual customer assessments, §6); an administrator grants
+  them in the matrix. Saving the matrix bumps `settings.rbacVersion`; the RBAC cache keys
   on it.
 - `memberships` `{ userId, orgId, roleId, status: ACTIVE|INACTIVE }`. A user
   may belong to several organisations. The active organisation is the header
@@ -299,10 +304,11 @@ registration link session), or a task code. All `[list]` endpoints accept
 
 ### assessments (signed-in)
 - `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType`) → history grid rows `{ id, cycle, kind, customerType, assessorName, assessorEmailMasked, status, submittedAt, score }`
-- `GET /assessments/:id` → read-only return (answers with question text); a customer's identity is hidden from non-platform users unless `settings.revealAssessorIdentity` — `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
+- `GET /assessments/:id` → read-only return (answers with question text); a customer's assessment needs `assessments.details` as well (403 `FORBIDDEN` without it; a self-assessment needs only `assessments.view`). A customer's identity is revealed only to a caller holding `assessments.details`, and then only to a platform role or when `settings.revealAssessorIdentity` is on — otherwise `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
+- Customer scores: without `assessments.scores` a customer's history row (and its return and CSV lines) carries `score`, `importScore` and `exportScore` null; the list still shows the row. A self-assessment's scores are always shown.
 - `GET /assessments/self/:cycleId/:surveyType` `assessments.self` → the ACO's self-assessment (created on first access) · `PATCH …/answers` · `POST …/submit`.
 - Import / export: history rows also carry `importScore` and `exportScore` — `score` is set on a SINGLE assessment, the pair on an IMPORT_EXPORT one, the others null. `GET /assessments/:id` adds `answerMode` and on IMPORT_EXPORT lists every question twice, IMPORT then EXPORT, each answer with its `direction` (as do the draft and self-assessment answers).
-- `GET /assessments/export?cycleId=` `assessments.view` → CSV (one line per question and direction; columns end `answerMode, direction, importScore, exportScore`).
+- `GET /assessments/export?cycleId=` `assessments.view` → CSV (one line per question and direction; columns end `answerMode, direction, importScore, exportScore`). Customer lines need `assessments.details`: without it `kind=CUSTOMER` is 403 `FORBIDDEN` and an export without `kind` holds the self-assessments only.
 
 ### scoring and reports
 - `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`); the summary lists the `directions` scored.
@@ -373,7 +379,15 @@ registration link session), or a task code. All `[list]` endpoints accept
   cycle has no rows in the direction.
 - **Confidentiality.** An ACO reads only its own operator report; the national
   table it sees carries airport ratings and ranks, never another operator's
-  figures. Platform roles see everything.
+  figures. Platform roles see everything. Individual customer assessments are
+  further guarded by two tasks beyond `assessments.view`:
+  `assessments.scores` (each customer assessment's own score in the history)
+  and `assessments.details` (opening its answers, the customer rows of the
+  CSV export, and — with a platform role or `settings.revealAssessorIdentity`
+  — who answered). Only SUPER_ADMIN and ACFI_ANALYST hold them by default.
+  Without them the history still lists every customer assessment in scope,
+  anonymous and unscored. The operator's own self-assessments are never
+  restricted by either task.
 - **Audit** actions: `registration.submitted/approved/rejected`,
   `operator.created/updated/deactivated`, `marketshare.updated`,
   `survey.published`, `cycle.created/updated/published/transitioned`,

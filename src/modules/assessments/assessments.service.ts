@@ -2,7 +2,7 @@ import type { FilterQuery, Types } from 'mongoose';
 import Papa from 'papaparse';
 
 import type { LinkSession } from '../../core/auth/link.js';
-import { assertScope } from '../../core/auth/rbac.js';
+import { assertScope, assertTask } from '../../core/auth/rbac.js';
 import type { RequestContext } from '../../core/auth/session.js';
 import { requestContextOf, systemContext, type AnyContext } from '../../core/auth/system.js';
 import { withTransaction } from '../../core/db.js';
@@ -459,8 +459,20 @@ async function assessorIdentity(doc: AssessmentDoc): Promise<AssessorIdentity> {
   return { name: customer?.contactPerson ?? customer?.name ?? null, email: customer?.email ?? null };
 }
 
+type OwnScores = Pick<HistoryRowDto, 'score' | 'importScore' | 'exportScore'>;
+
+const NO_SCORES: OwnScores = { score: null, importScore: null, exportScore: null };
+
+/** `score` on a SINGLE assessment, the import / export pair on an IMPORT_EXPORT one. */
+function ownScores(doc: AssessmentDoc): OwnScores {
+  if (answerModeOf(doc) === 'SINGLE') return { ...NO_SCORES, score: ownScore(doc.answers) };
+  return { ...NO_SCORES, importScore: ownScoreByDirection(doc.answers, 'IMPORT'), exportScore: ownScoreByDirection(doc.answers, 'EXPORT') };
+}
+
+/** History rows; a customer's identity per `revealsIdentity`, its scores only with `assessments.scores` (a self-assessment shows both). */
 async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]): Promise<HistoryRowDto[]> {
   const reveal = revealsIdentity(ctx, await getSettingsDoc());
+  const customerScores = ctx.tasks.has('assessments.scores');
   const [cycles, operators, identities] = await Promise.all([
     cycleSummaries(ctx, docs),
     findOrganisationsByIds(docs.map((doc) => doc.acoId)),
@@ -488,9 +500,7 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       progress: progressOf(doc.answeredCount, doc.questionCount),
       startedAt: doc.startedAt.toISOString(),
       submittedAt: doc.submittedAt?.toISOString() ?? null,
-      score: answerModeOf(doc) === 'SINGLE' ? ownScore(doc.answers) : null,
-      importScore: answerModeOf(doc) === 'IMPORT_EXPORT' ? ownScoreByDirection(doc.answers, 'IMPORT') : null,
-      exportScore: answerModeOf(doc) === 'IMPORT_EXPORT' ? ownScoreByDirection(doc.answers, 'EXPORT') : null,
+      ...(doc.kind === 'SELF' || customerScores ? ownScores(doc) : NO_SCORES),
     };
   });
 }
@@ -543,9 +553,10 @@ function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], a
   });
 }
 
-/** The read-only return: every form question with its answer; identity masked per the setting. */
+/** The read-only return: every form question with its answer; identity masked per the setting. A customer's needs `assessments.details` (403). */
 export async function getAssessment(ctx: RequestContext, id: string): Promise<AssessmentDetailDto> {
   const doc = await requireVisibleAssessment(ctx, id);
+  if (doc.kind === 'CUSTOMER') assertTask(ctx, 'assessments.details');
   const [row] = await toHistoryRows(ctx, [doc]);
   if (!row) throw new AppError('INTERNAL', 'History row missing');
   const form = await formFor(doc);
@@ -585,12 +596,17 @@ export interface CsvExport {
   csv: string;
 }
 
-/** One CSV row per assessment and form question (long format), identities masked per the setting; a cycle out of scope is 404. */
+/**
+ * One CSV row per assessment and form question (long format), identities masked per the setting; a cycle out of scope is 404.
+ * Customer rows carry every answer, so they need `assessments.details`: asking for `kind=CUSTOMER` without it is 403, and an export without a kind is the self-assessments only.
+ */
 export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQuery): Promise<CsvExport> {
+  if (query.kind === 'CUSTOMER') assertTask(ctx, 'assessments.details');
+  const kind = ctx.tasks.has('assessments.details') ? query.kind : 'SELF';
   const cycle = await cycleRef(ctx, query.cycleId);
   const requested: FilterQuery<AssessmentDoc> = { cycleId: toId(query.cycleId) };
   if (query.acoId) requested.acoId = toId(query.acoId);
-  if (query.kind) requested.kind = query.kind;
+  if (kind) requested.kind = kind;
   if (query.status) requested.status = query.status;
   const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
   const rows = await toHistoryRows(ctx, docs);
