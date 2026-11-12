@@ -10,10 +10,14 @@
  * Every operator and airport role receives `cycles.view`: the cycle strip,
  * the sampling page and the dashboard all start from GET /cycles/current,
  * and a role that cannot see which cycle it is in cannot act in it.
+ * Individual customer assessments (`assessments.scores`, `assessments.details`)
+ * are platform staff's by default: ACFI_ANALYST holds both (SUPER_ADMIN through
+ * `*`); operator and airport roles get them only when an administrator grants
+ * them in the matrix.
  */
 export const DEFAULT_MATRIX: Readonly<Record<string, readonly string[]>> = {
   SUPER_ADMIN: ['*'],
-  ACFI_ANALYST: ['*.view', 'reports.*', 'monitoring.view'],
+  ACFI_ANALYST: ['*.view', 'reports.*', 'monitoring.view', 'assessments.scores', 'assessments.details'],
   ACO_ADMIN: [
     'cycles.view',
     'customers.*',

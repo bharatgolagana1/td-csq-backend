@@ -17,7 +17,9 @@ import { seedSurveys } from '../src/seed/surveys.js';
 
 import { createTestCustomer, createTestCycle, remarkEverySection, remarksFor, type TestCycle } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
-import { airportIdByIata } from './helpers/fixtures.js';
+import { airportIdByIata, grantTasks, revokeTasks } from './helpers/fixtures.js';
+
+const CUSTOMER_TASKS = ['assessments.scores', 'assessments.details'];
 
 let t: TestApp;
 let operator: TestUser;
@@ -40,6 +42,8 @@ function questionsOf(form: { categories: { questions: FormQuestionView[]; subcat
 
 beforeAll(async () => {
   t = await createTestApp();
+  // The customer-assessment tasks are not ACO_ADMIN defaults: granted for the flow, taken away again in the last block.
+  await grantTasks('ACO_ADMIN', CUSTOMER_TASKS);
   operator = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'FLOW-ACO', airportIata: 'BLR', name: 'Nisha Menon' });
   acoId = idString(operator.org._id);
   surveyId = (await seedSurveys()).INTERNATIONAL.id;
@@ -203,5 +207,46 @@ describe('self-assessment flow', () => {
     const lines = res.text.trim().split('\n');
     expect(lines).toHaveLength(1 + 27 + 27);
     expect(lines.slice(1).every((line) => /,Remarks on [^,]+$/.test(line))).toBe(true);
+  });
+});
+
+describe('without the customer-assessment tasks', () => {
+  beforeAll(() => revokeTasks('ACO_ADMIN', CUSTOMER_TASKS));
+  afterAll(() => grantTasks('ACO_ADMIN', CUSTOMER_TASKS));
+
+  it('the history still lists the customer assessment, anonymous and unscored, and its return is 403', async () => {
+    const history = await operator.get(`/api/v1/assessments?cycleId=${cycle.id}&kind=CUSTOMER`);
+    expect(history.status).toBe(200);
+    expect(history.body.data).toHaveLength(1);
+    const customer = history.body.data[0] as { id: string };
+    expect(customer).toMatchObject({ kind: 'CUSTOMER', status: 'SUBMITTED', assessorName: null, assessorEmailMasked: null, customerId: null, assessor: { name: null, email: null, revealed: false }, score: null, importScore: null, exportScore: null });
+    expect(JSON.stringify(history.body)).not.toMatch(/Lakshmi|gcb\.test|Garden City/);
+    const details = await operator.get(`/api/v1/assessments/${customer.id}`);
+    expect(details.status).toBe(403);
+    expect(details.body.error).toMatchObject({ code: 'FORBIDDEN', details: { task: 'assessments.details' } });
+  });
+
+  it('the self-assessment keeps its assessor, its score and its return', async () => {
+    const history = await operator.get(`/api/v1/assessments?cycleId=${cycle.id}&kind=SELF`);
+    expect(history.status).toBe(200);
+    expect(history.body.data).toHaveLength(1);
+    // 26 ratings of 5, one NA.
+    expect(history.body.data[0]).toMatchObject({ kind: 'SELF', assessorName: 'Nisha Menon', assessor: { name: 'Nisha Menon', revealed: true }, score: 5 });
+    const one = await operator.get(`/api/v1/assessments/${history.body.data[0].id}`);
+    expect(one.status).toBe(200);
+    expect(one.body.data.answers).toHaveLength(27);
+  });
+
+  it('the export refuses kind=CUSTOMER and otherwise carries the self-assessment only', async () => {
+    const customer = await operator.get(`/api/v1/assessments/export?cycleId=${cycle.id}&kind=CUSTOMER`);
+    expect(customer.status).toBe(403);
+    expect(customer.body.error.code).toBe('FORBIDDEN');
+    for (const query of ['', '&kind=SELF']) {
+      const res = await operator.get(`/api/v1/assessments/export?cycleId=${cycle.id}${query}`);
+      expect(res.status).toBe(200);
+      const lines = res.text.trim().split('\n').slice(1);
+      expect(lines).toHaveLength(27);
+      expect(lines.every((line) => line.includes(',SELF,'))).toBe(true);
+    }
   });
 });

@@ -25,7 +25,7 @@ import { getScores } from '../../src/modules/scoring/scoring.service.js';
 import { seedSurveys } from '../../src/seed/surveys.js';
 import { remarksFor } from '../assessments.fixtures.js';
 import { createTestApp, tokenFor, type TestApp, type TestUser } from '../helpers/app.js';
-import { airportIdByIata, expectError, operatorPayload } from '../helpers/fixtures.js';
+import { airportIdByIata, expectError, grantTasks, operatorPayload } from '../helpers/fixtures.js';
 import { answersFor, formQuestionIds } from '../invitations.fixtures.js';
 
 // --- the test's own environment -----------------------------------------------
@@ -653,8 +653,12 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expect((await adminA.get(`${API}/invitations?cycleId=${cycleId}`)).body.data.map((row: { state: string }) => row.state)).toEqual(['SUBMITTED', 'SUBMITTED', 'SUBMITTED']);
     expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 3, completed: 3, pending: 0, completionRate: 100 });
 
-    // The operator's history: masked assessors, the NA-excluding score of each submission.
-    const history = await adminA.get(`${API}/assessments?cycleId=${cycleId}&kind=CUSTOMER&sort=submittedAt`);
+    // The operator's history: masked assessors, and the NA-excluding score of each submission once the
+    // operator's role is granted assessments.scores (not an operator default).
+    const path = `${API}/assessments?cycleId=${cycleId}&kind=CUSTOMER&sort=submittedAt`;
+    expect(((await adminA.get(path)).body.data as { score: number | null }[]).map((row) => row.score)).toEqual([null, null, null]);
+    await grantTasks('ACO_ADMIN', ['assessments.scores']);
+    const history = await adminA.get(path);
     expect(history.status, JSON.stringify(history.body)).toBe(200);
     const rows = history.body.data as { customerType: string; status: string; score: number; assessorName: string; assessor: { revealed: boolean } }[];
     expect(rows.map((row) => [row.customerType, row.status, row.score])).toEqual([
