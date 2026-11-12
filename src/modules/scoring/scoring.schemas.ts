@@ -14,7 +14,6 @@ export const scoreRowResponse = z.object({
   level: scoreLevelSchema,
   /** Stable code of the node (question / subcategory / category code), or `OVERALL`. */
   refId: z.string(),
-  direction: scoreDirectionSchema.optional(),
   customer: meanWithN.extend({ naCount: z.number(), byType: z.object({ FF: meanWithN, CB: meanWithN }) }),
   self: meanWithN,
   suppressed: z.literal('INSUFFICIENT_RESPONSES').optional(),
@@ -35,12 +34,12 @@ export const distributionBucketResponse = z.object({
 
 export const responseCountsResponse = z.object({ customer: z.number(), self: z.number(), FF: z.number(), CB: z.number() });
 
-/** `getScores(cycleId, acoId, surveyType)`: the operator's rows in tree order plus the feedback distribution and counts. */
+/** `getScores(cycleId, acoId, surveyType, direction)`: the operator's rows in tree order plus the feedback distribution and counts. */
 export const scoreSetResponse = z.object({
   cycleId: z.string(),
   acoId: z.string(),
   surveyType: surveyTypeSchema,
-  direction: scoreDirectionSchema.optional(),
+  direction: scoreDirectionSchema,
   /** Null until the cycle has been scored for this operator and type. */
   surveyId: z.string().nullable(),
   provisional: z.boolean().nullable(),
@@ -55,7 +54,7 @@ export const airportScoreResponse = z.object({
   cycleId: z.string(),
   airportId: z.string(),
   surveyType: surveyTypeSchema,
-  direction: scoreDirectionSchema.optional(),
+  direction: scoreDirectionSchema,
   level: scoreLevelSchema,
   refId: z.string(),
   mean: z.number().nullable(),
@@ -72,7 +71,7 @@ export type AirportScoreDto = z.infer<typeof airportScoreResponse>;
 /** One line of the national table: airport ratings and ranks only, never an operator's figures (§7 "Confidentiality"). */
 export const nationalRowResponse = z.object({
   airportId: z.string(),
-  direction: scoreDirectionSchema.optional(),
+  direction: scoreDirectionSchema,
   iata: z.string(),
   name: z.string(),
   mean: z.number().nullable(),
@@ -103,6 +102,8 @@ export const runSummaryResponse = z.object({
   provisional: z.boolean(),
   computedAt: z.string(),
   surveyTypes: z.array(surveyTypeSchema),
+  /** From the cycle's answer mode: SINGLE, or IMPORT and EXPORT. */
+  directions: z.array(scoreDirectionSchema),
   operators: z.number(),
   airports: z.number(),
   rows: z.number(),

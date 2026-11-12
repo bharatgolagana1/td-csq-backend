@@ -111,7 +111,8 @@ describe('seed:demo', () => {
     const res = await superAdmin.get(`/api/v1/reports/operator/${acoId}`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const report = res.body.data;
-    expect(report.cycle.code).toBe('CSQ-2026-H1');
+    expect(report.cycle).toMatchObject({ code: 'CSQ-2026-H1', answerMode: 'SINGLE' });
+    expect(report.direction).toBe('SINGLE');
     expect(report.provisional).toBe(false);
     expect(report.overall.customer.mean).toBeGreaterThan(3.5);
     expect(report.overall.customer.n).toBeGreaterThan(20);
@@ -142,7 +143,8 @@ describe('seed:demo', () => {
     expect(current.status, JSON.stringify(current.body)).toBe(200);
     expect(current.body.data).toHaveLength(1);
     expect(current.body.data[0]).toMatchObject({
-      cycle: { id: live.id, code: 'CSQ-2026-H2', status: 'SAMPLING_OPEN', minSampleSize: 50 },
+      // The live cycle asks for import and export answers; the scored ones predate them.
+      cycle: { id: live.id, code: 'CSQ-2026-H2', status: 'SAMPLING_OPEN', minSampleSize: 50, answerMode: 'IMPORT_EXPORT' },
       participant: { requiredSampleSize: 50, sampling: { status: 'IN_PROGRESS', selectedCount: 37 } },
       nextDeadline: { kind: 'SAMPLING_CLOSES' },
     });

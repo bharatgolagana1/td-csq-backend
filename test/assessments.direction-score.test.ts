@@ -1,59 +1,22 @@
-
+// An IMPORT_EXPORT assessment's own score per direction (the history grid's
+// `importScore` / `exportScore`): NA-excluding mean, 1 dp.
 import { describe, expect, it } from 'vitest';
 
 import { ownScoreByDirection } from '../src/modules/assessments/assessments.form.js';
 import type { StoredAnswer } from '../src/modules/assessments/assessments.model.js';
 
+function answer(questionId: string, direction: 'IMPORT' | 'EXPORT', rating: StoredAnswer['rating']): StoredAnswer {
+  return { questionId, direction, rating, na: rating === null, comment: null, followUp: [] };
+}
+
 describe('Import and Export assessment scoring', () => {
   const answers: StoredAnswer[] = [
-    {
-      questionId: 'q1',
-      direction: 'IMPORT',
-      rating: 5,
-      na: false,
-      comment: null,
-      followUp: [],
-    },
-    {
-      questionId: 'q1',
-      direction: 'EXPORT',
-      rating: 3,
-      na: false,
-      comment: null,
-      followUp: [],
-    },
-    {
-      questionId: 'q2',
-      direction: 'IMPORT',
-      rating: 4,
-      na: false,
-      comment: null,
-      followUp: [],
-    },
-    {
-      questionId: 'q2',
-      direction: 'EXPORT',
-      rating: 4,
-      na: false,
-      comment: null,
-      followUp: [],
-    },
-    {
-      questionId: 'q3',
-      direction: 'IMPORT',
-      rating: null,
-      na: true,
-      comment: null,
-      followUp: [],
-    },
-    {
-      questionId: 'q3',
-      direction: 'EXPORT',
-      rating: 2,
-      na: false,
-      comment: null,
-      followUp: [],
-    },
+    answer('q1', 'IMPORT', 5),
+    answer('q1', 'EXPORT', 3),
+    answer('q2', 'IMPORT', 4),
+    answer('q2', 'EXPORT', 4),
+    answer('q3', 'IMPORT', null),
+    answer('q3', 'EXPORT', 2),
   ];
 
   it('calculates Import independently and excludes NA', () => {

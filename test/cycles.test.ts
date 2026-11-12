@@ -10,6 +10,7 @@ import { clearEventHandlers, emit, on, type Events } from '../src/core/events.js
 import { idString, toId } from '../src/core/ids.js';
 import { AuditModel } from '../src/modules/audit/audit.model.js';
 import { registerCycleHandlers } from '../src/modules/cycles/cycles.handlers.js';
+import { CycleModel } from '../src/modules/cycles/cycles.model.js';
 import {
   bumpParticipantStats,
   getCycle,
@@ -112,6 +113,7 @@ describe('POST /cycles', () => {
     expect(cycle).toMatchObject({
       code: 'CSQ-2026-H2',
       type: 'BOTH',
+      answerMode: 'SINGLE',
       status: 'DRAFT',
       tz: TZ,
       minSampleSize: 10,
@@ -178,6 +180,29 @@ describe('DRAFT: GET and PATCH', () => {
     expect((audit?.before as { minSampleSize: number }).minSampleSize).toBe(10);
     expect((audit?.after as { minSampleSize: number }).minSampleSize).toBe(12);
     expectError(await superAdmin.get(`${CYCLES}/0123456789abcdef01234567`), 404, 'NOT_FOUND');
+  });
+
+  it('takes an answer mode at creation and changes it while DRAFT, audited; a cycle stored without one reads SINGLE', async () => {
+    const created = await superAdmin.post(CYCLES).send({ name: 'Modes', code: 'CSQ-MODES', type: 'DOMESTIC', answerMode: 'IMPORT_EXPORT', initiationDate: dateIn(5), minSampleSize: 5 });
+    expect(created.status).toBe(201);
+    expect(created.body.data.answerMode).toBe('IMPORT_EXPORT');
+    const id = created.body.data.id as string;
+    try {
+      const patched = await superAdmin.patch(`${CYCLES}/${id}`).send({ answerMode: 'SINGLE' });
+      expect(patched.status).toBe(200);
+      expect(patched.body.data.answerMode).toBe('SINGLE');
+      const audit = await AuditModel.findOne({ action: 'cycle.updated', entityId: id }).lean();
+      expect(audit?.before).toMatchObject({ answerMode: 'IMPORT_EXPORT' });
+      expect(audit?.after).toMatchObject({ answerMode: 'SINGLE' });
+      expectError(await superAdmin.patch(`${CYCLES}/${id}`).send({ answerMode: 'BOTH' }), 400, 'VALIDATION');
+
+      await CycleModel.collection.updateOne({ _id: toId(id) }, { $unset: { answerMode: '' } });
+      expect((await superAdmin.get(`${CYCLES}/${id}`)).body.data.answerMode).toBe('SINGLE');
+      expect((await superAdmin.get(`${CYCLES}?q=CSQ-MODES`)).body.data.map((row: { answerMode: string }) => row.answerMode)).toEqual(['SINGLE']);
+    } finally {
+      // The rest of the file counts the DRAFT cycles.
+      await CycleModel.deleteOne({ _id: toId(id) });
+    }
   });
 });
 
@@ -328,6 +353,15 @@ describe('PATCH after publishing', () => {
     expect(extended.body.data.assessment.start.wall).toBe(wall(13));
     expect(extended.body.data.reminders.sampling).toEqual({ count: 2, everyDays: 4 });
     expect(await AuditModel.countDocuments({ action: 'cycle.updated', entityId: cycle1 })).toBe(2);
+  });
+
+  it('refuses to change the answer mode once published; restating it changes nothing', async () => {
+    const refused = expectError(await superAdmin.patch(`${CYCLES}/${cycle2}`).send({ answerMode: 'IMPORT_EXPORT' }), 412, 'PRECONDITION_FAILED');
+    expect(refused.message).toBe('The answer mode is fixed once the cycle is published');
+    expect(refused.details).toEqual({ answerMode: 'SINGLE', status: 'SAMPLING_OPEN' });
+    const restated = await superAdmin.patch(`${CYCLES}/${cycle2}`).send({ answerMode: 'SINGLE' });
+    expect(restated.status).toBe(200);
+    expect(restated.body.data).toMatchObject({ answerMode: 'SINGLE', status: 'SAMPLING_OPEN' });
   });
 });
 

@@ -2,13 +2,14 @@
 // `GET /reports/comparison`, REQUIREMENTS §23 "comparison between assessment
 // cycles"). Survey nodes are matched on their code — a new survey version
 // gives every node a new id while codes stay stable, which is also how the
-// scoring module keys its rows.
+// scoring module keys its rows. Each cycle shows the direction its answer mode
+// allows: its SINGLE figures, or the requested side of an IMPORT_EXPORT cycle.
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 
 import { requireVisibleOperator } from './reports.access.js';
-import { cycleSummaryOf, indexRows, isScored, NO_SCORE, operatorSummaryOf, round2, rowAt } from './reports.figures.js';
-import type { ComparisonDto, ComparisonQuery, ComparisonRowDto, SurveyType } from './reports.schemas.js';
+import { cycleSummaryOf, directionOf, indexRows, isScored, NO_SCORE, operatorSummaryOf, round2, rowAt } from './reports.figures.js';
+import type { ComparisonDto, ComparisonQuery, ComparisonRowDto, ReportDirection, RequestedDirection, SurveyType } from './reports.schemas.js';
 import {
   loadAirport,
   loadCycle,
@@ -27,6 +28,7 @@ const EMPTY_TREE: SurveyTreeView = { id: '', categories: [] };
 
 interface ComparedCycle {
   cycle: CycleView;
+  direction: ReportDirection;
   participant: ParticipantView;
   rows: Map<string, ScoreRowView>;
   tree: SurveyTreeView;
@@ -88,18 +90,19 @@ async function loadCompared(
   acoId: string,
   cycleId: string,
   surveyType: SurveyType | undefined,
-  direction: ComparisonQuery['direction'],
+  requested: RequestedDirection | undefined,
 ): Promise<ComparedCycle> {
   const cycle = await loadCycle(ctx, cycleId);
   const participant = cycle ? await loadParticipant(cycle.id, acoId) : null;
   if (!cycle || !participant) throw new AppError('NOT_FOUND', `Operator did not take part in cycle ${cycleId}`);
+  const direction = directionOf(cycle, requested);
   const type = surveyType ?? participant.surveyTypes[0];
   const surveyId = type ? cycle.surveyVersions[type] : undefined;
   const [scores, tree] = await Promise.all([
-    type && participant.surveyTypes.includes(type) ? loadScores(cycle.id, acoId, type, direction ?? 'SINGLE') : { rows: [], distribution: [] },
+    type && participant.surveyTypes.includes(type) ? loadScores(cycle.id, acoId, type, direction) : { rows: [], distribution: [] },
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
-  return { cycle, participant, rows: indexRows(scores.rows), tree };
+  return { cycle, direction, participant, rows: indexRows(scores.rows), tree };
 }
 
 export async function comparisonReport(ctx: RequestContext, query: ComparisonQuery): Promise<ComparisonDto> {
@@ -114,12 +117,10 @@ export async function comparisonReport(ctx: RequestContext, query: ComparisonQue
   for (const { tree } of compared) collectNodes(union, tree);
 
   return {
-    ...(query.direction && query.direction !== 'SINGLE'
-      ? { direction: query.direction }
-      : {}),
     operator: operatorSummaryOf(operator, operator.airportId ? await loadAirport(operator.airportId) : null),
     surveyType,
-    cycles: compared.map(({ cycle }) => ({ ...cycleSummaryOf(cycle), provisional: !isScored(cycle) })),
+    direction: compared.find((entry) => entry.direction !== 'SINGLE')?.direction ?? 'SINGLE',
+    cycles: compared.map(({ cycle, direction }) => ({ ...cycleSummaryOf(cycle), provisional: !isScored(cycle), direction })),
     overall: compared.map(({ cycle, rows }) => {
       const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
       return { ...valueOf(cycle.id, overall), rank: overall?.rank ?? null, rankOf: overall?.rankOf ?? 0 };

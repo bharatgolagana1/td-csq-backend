@@ -11,12 +11,12 @@ import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
-import { OVERALL_REF_ID, type DistributionBucket, type Rating, type ScoreDirection } from '../scoring/engine/index.js';
+import { OVERALL_REF_ID, type DistributionBucket, type Rating } from '../scoring/engine/index.js';
 import type { AirportScoreDto, NationalRowDto, ScoreSetDto } from '../scoring/scoring.schemas.js';
 import { getAirportScores, getScores, nationalTable } from '../scoring/scoring.service.js';
 import { getSurveyTree } from '../surveys/surveys.service.js';
 
-import type { SurveyType } from './reports.schemas.js';
+import type { AnswerMode, ReportDirection, SurveyType } from './reports.schemas.js';
 
 export { OVERALL_REF_ID };
 
@@ -30,6 +30,8 @@ export interface CycleRef {
   code: string;
   name: string;
   type: CycleType;
+  /** Decides the report's direction (`directionOf`). */
+  answerMode: AnswerMode;
   status: string;
   assessment: { start: Date; end: Date } | null;
   scoredAt: Date | null;
@@ -176,6 +178,7 @@ function toCycleRef(dto: CycleListRow | CycleDetail): CycleRef {
     code: dto.code,
     name: dto.name,
     type: dto.type,
+    answerMode: dto.answerMode,
     status: dto.status,
     assessment: { start: new Date(dto.assessment.start.utc), end: new Date(dto.assessment.end.utc) },
     scoredAt: dto.scoredAt ? new Date(dto.scoredAt) : null,
@@ -258,12 +261,7 @@ function toScoreRowView(row: ScoreSetDto['rows'][number]): ScoreRowView {
   };
 }
 
-export async function loadScores(
-  cycleId: string,
-  acoId: string,
-  surveyType: SurveyType,
-  direction: ScoreDirection = 'SINGLE',
-): Promise<ScoreSetView> {
+export async function loadScores(cycleId: string, acoId: string, surveyType: SurveyType, direction: ReportDirection): Promise<ScoreSetView> {
   const set: ScoreSetDto = await getScores(cycleId, acoId, surveyType, direction);
   return {
     rows: set.rows.map(toScoreRowView),
@@ -271,12 +269,7 @@ export async function loadScores(
   };
 }
 
-export async function loadAirportScores(
-  cycleId: string,
-  airportId: string,
-  surveyType: SurveyType,
-  direction: ScoreDirection = 'SINGLE',
-): Promise<AirportScoreView[]> {
+export async function loadAirportScores(cycleId: string, airportId: string, surveyType: SurveyType, direction: ReportDirection): Promise<AirportScoreView[]> {
   const rows: AirportScoreDto[] = await getAirportScores(cycleId, airportId, direction);
   return rows
     .filter((row) => row.surveyType === surveyType)
@@ -298,11 +291,7 @@ export async function loadAirportScores(
     }));
 }
 
-export async function loadNationalTable(
-  cycleId: string,
-  surveyType: SurveyType,
-  direction: ScoreDirection = 'SINGLE',
-): Promise<NationalRowView[]> {
+export async function loadNationalTable(cycleId: string, surveyType: SurveyType, direction: ReportDirection): Promise<NationalRowView[]> {
   const rows: NationalRowDto[] = await nationalTable(cycleId, surveyType, direction);
   return rows.map((row) => ({
     airportId: idString(row.airportId),
@@ -354,16 +343,19 @@ function toRating(value: number | null): Rating | null {
   return value !== null && RATINGS.includes(value) ? (value as Rating) : null;
 }
 
-/** SUBMITTED CUSTOMER assessments of one operator for one survey type, with answers (ratings, NA, comments). */
+/**
+ * SUBMITTED CUSTOMER assessments of one operator for one survey type, with
+ * the answers (ratings, NA, comments) of one direction: SINGLE takes the
+ * SINGLE assessments, IMPORT / EXPORT that side of the IMPORT_EXPORT ones.
+ */
 export async function loadSubmittedCustomerAssessments(
   cycleId: string,
   acoId: string,
   surveyType: SurveyType,
-  direction: ScoreDirection = 'SINGLE',
+  direction: ReportDirection,
 ): Promise<SubmittedAssessmentView[]> {
   const docs = await listSubmitted(cycleId, acoId, 'CUSTOMER');
-  const answerMode = direction === 'SINGLE' ? 'SINGLE' : 'IMPORT_EXPORT';
-
+  const answerMode: AnswerMode = direction === 'SINGLE' ? 'SINGLE' : 'IMPORT_EXPORT';
   return docs
     .filter((doc) => doc.surveyType === surveyType && doc.answerMode === answerMode)
     .map((doc) => ({
@@ -371,18 +363,12 @@ export async function loadSubmittedCustomerAssessments(
       kind: doc.kind,
       surveyType: doc.surveyType,
       ...(doc.customerType ? { customerType: doc.customerType } : {}),
-      answers: doc.answers
-        .filter((answer) =>
-          direction === 'SINGLE'
-            ? !answer.direction
-            : answer.direction === direction,
-        )
-        .map((answer) => ({
-          questionId: answer.questionId,
-          rating: toRating(answer.rating),
-          na: answer.na,
-          comment: answer.comment,
-        })),
+      answers: doc.answers.filter((answer) => (answer.direction ?? 'SINGLE') === direction).map((answer) => ({
+        questionId: answer.questionId,
+        rating: toRating(answer.rating),
+        na: answer.na,
+        comment: answer.comment,
+      })),
     }));
 }
 

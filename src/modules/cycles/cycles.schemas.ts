@@ -4,7 +4,7 @@ import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
 
 import { SAMPLING_STATUSES, SELF_ASSESSMENT_STATUSES } from './cycle-participants.model.js';
-import { CYCLE_STATUSES, CYCLE_TYPES, SURVEY_TYPES } from './domain/types.js';
+import { ANSWER_MODES, CYCLE_STATUSES, CYCLE_TYPES, SURVEY_TYPES } from './domain/types.js';
 import { isCalendarDate, isValidTimeZone, isWallClock } from './domain/windows.js';
 
 // --- building blocks -------------------------------------------------------
@@ -52,6 +52,8 @@ export const cycleSummaryResponse = z.object({
   code: z.string(),
   name: z.string(),
   type: z.enum(CYCLE_TYPES),
+  /** SINGLE: one answer per question; IMPORT_EXPORT: one for import and one for export cargo, scored separately. */
+  answerMode: z.enum(ANSWER_MODES),
   status: z.enum(CYCLE_STATUSES),
   tz: z.string(),
   sampling: windowResponse,
@@ -180,6 +182,8 @@ export const createCycleBody = z
     name: z.string().trim().min(1).max(200),
     code: cycleCodeSchema,
     type: z.enum(CYCLE_TYPES),
+    /** Default SINGLE. */
+    answerMode: z.enum(ANSWER_MODES).optional(),
     tz: timeZoneSchema.optional(),
     /** With `sampling`/`assessment` omitted, the windows are derived from `settings.defaults`. */
     initiationDate: calendarDateSchema.optional(),
@@ -199,6 +203,8 @@ export const patchCycleBody = z
     name: z.string().trim().min(1).max(200),
     code: cycleCodeSchema,
     type: z.enum(CYCLE_TYPES),
+    /** DRAFT only: fixed once the cycle is published. */
+    answerMode: z.enum(ANSWER_MODES),
     tz: timeZoneSchema,
     initiationDate: calendarDateSchema,
     sampling: windowPatch,

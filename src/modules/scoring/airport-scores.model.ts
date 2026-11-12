@@ -25,7 +25,8 @@ export interface AirportScoreDoc {
   cycleId: Types.ObjectId;
   airportId: Types.ObjectId;
   surveyType: SurveyType;
-  direction?: ScoreDirection;
+  /** As on `scores`: SINGLE, or IMPORT / EXPORT on an IMPORT_EXPORT cycle. */
+  direction: ScoreDirection;
   level: ScoreLevel;
   refId: string;
   order: number;
@@ -56,7 +57,7 @@ const schema = new Schema<AirportScoreDoc>(
     cycleId: { type: Schema.Types.ObjectId, ref: 'Cycle', required: true },
     airportId: { type: Schema.Types.ObjectId, ref: 'Airport', required: true },
     surveyType: { type: String, enum: SURVEY_TYPES, required: true },
-    direction: { type: String, enum: SCORE_DIRECTIONS, default: 'SINGLE' },
+    direction: { type: String, enum: SCORE_DIRECTIONS, required: true, default: 'SINGLE' },
     level: { type: String, enum: SCORE_LEVELS, required: true },
     refId: { type: String, required: true },
     order: { type: Number, required: true, default: 0 },
@@ -72,17 +73,8 @@ const schema = new Schema<AirportScoreDoc>(
   { timestamps: true, collection: 'airport_scores', minimize: false },
 );
 
-schema.index(
-  {
-    cycleId: 1,
-    airportId: 1,
-    surveyType: 1,
-    direction: 1,
-    level: 1,
-    refId: 1,
-  },
-  { unique: true },
-);
+// Replaced { cycleId, airportId, surveyType, level, refId } at boot (scores.migration.ts).
+schema.index({ cycleId: 1, airportId: 1, surveyType: 1, direction: 1, level: 1, refId: 1 }, { unique: true });
 schema.index({ cycleId: 1, surveyType: 1, level: 1, refId: 1 });
 
 export const AirportScoreModel = model<AirportScoreDoc>('AirportScore', schema);

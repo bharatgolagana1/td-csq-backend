@@ -13,5 +13,4 @@ export { feedbackDistribution } from './distribution.js';
 export { rankOperators } from './ranking.js';
 export { rollupAirport, DEFAULT_MIN_COVERED_SHARE_PCT } from './airport.js';
 export { withPrevious, rowKey } from './comparison.js';
-export { selectForDirection  } from './directions.js';
-export type { ScoreDirection } from './directions.js';
+export { directionsFor, selectForDirection } from './directions.js';

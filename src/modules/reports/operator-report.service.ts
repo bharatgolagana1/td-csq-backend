@@ -2,7 +2,7 @@
 // its question-level table. Composes the scoring module's rows (keyed by the
 // survey node's code) with the survey tree the cycle pinned, the participant's
 // assessment funnel and the national airport table; never another operator's
-// figures.
+// figures. Every figure is in the selection's direction (SINGLE, IMPORT or EXPORT).
 import type { RequestContext } from '../../core/auth/session.js';
 import { feedbackDistribution } from '../scoring/engine/index.js';
 
@@ -25,6 +25,7 @@ import type {
   OperatorReportDto,
   OperatorReportQuery,
   QuestionReportRowDto,
+  ReportDirection,
   SurveyType,
 } from './reports.schemas.js';
 import { selectOperatorCycle, type OperatorSelection } from './reports.selection.js';
@@ -51,7 +52,6 @@ import {
 const EMPTY_TREE: SurveyTreeView = { id: '', categories: [] };
 
 interface OperatorReportInputs {
-  direction: 'SINGLE' | 'IMPORT' | 'EXPORT';
   operator: OperatorView;
   selection: OperatorSelection;
   scores: ScoreSetView;
@@ -65,22 +65,10 @@ async function loadOperatorInputs(ctx: RequestContext, acoId: string, query: Ope
   const selection = await selectOperatorCycle(ctx, acoId, query);
   const surveyId = selection.cycle.surveyVersions[selection.surveyType];
   const [scores, tree] = await Promise.all([
-    loadScores(
-      selection.cycle.id,
-      acoId,
-      selection.surveyType,
-      query.direction ?? 'SINGLE',
-    ),
+    loadScores(selection.cycle.id, acoId, selection.surveyType, selection.direction),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
-  return {
-    operator,
-    selection,
-    direction: query.direction ?? 'SINGLE',
-    scores,
-    rows: indexRows(scores.rows),
-    tree,
-  };
+  return { operator, selection, scores, rows: indexRows(scores.rows), tree };
 }
 
 function byOrder<T extends { order: number }>(nodes: readonly T[]): T[] {
@@ -127,10 +115,10 @@ function distributionOf(scores: ScoreSetView): OperatorReportDto['feedbackDistri
 async function nationalTableOf(
   cycleId: string,
   surveyType: SurveyType,
+  direction: ReportDirection,
   ownAirportId: string | null,
-  direction: OperatorReportQuery['direction'],
 ): Promise<NationalTableRowDto[]> {
-  const rows = await loadNationalTable(cycleId, surveyType, direction ?? 'SINGLE');
+  const rows = await loadNationalTable(cycleId, surveyType, direction);
   return rows
     .map((row) => ({
       airportIata: row.iata,
@@ -148,12 +136,12 @@ async function comparisonOf(
   inputs: OperatorReportInputs,
   overall: ScoreRowView | undefined,
 ): Promise<OperatorReportDto['comparison']> {
-  const { cycle, surveyType } = inputs.selection;
+  const { cycle, surveyType, direction } = inputs.selection;
   const current = { cycleId: cycle.id, cycleName: cycle.name, customer: round2(overall?.customer.mean ?? null), self: round2(overall?.self.mean ?? null) };
   if (!overall?.previous) return { current, previous: null };
   const [previousCycle, previousScores] = await Promise.all([
     loadCycle(ctx, overall.previous.cycleId),
-    loadScores(overall.previous.cycleId, inputs.operator.id, surveyType, inputs.direction),
+    loadScores(overall.previous.cycleId, inputs.operator.id, surveyType, direction),
   ]);
   const previousOverall = rowAt(indexRows(previousScores.rows), 'OVERALL', OVERALL_REF_ID);
   return {
@@ -170,23 +158,21 @@ async function comparisonOf(
 export async function operatorReport(ctx: RequestContext, acoId: string, query: OperatorReportQuery): Promise<OperatorReportDto> {
   const inputs = await loadOperatorInputs(ctx, acoId, query);
   const { operator, selection, scores, rows, tree } = inputs;
-  const { cycle, participant, surveyType, provisional } = selection;
+  const { cycle, participant, surveyType, direction, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
   const [airport, nationalTable, comparison, assessments, airportsTotal] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    nationalTableOf(cycle.id, surveyType, operator.airportId, query.direction),
+    nationalTableOf(cycle.id, surveyType, direction, operator.airportId),
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
     countActiveAirports(),
   ]);
 
   return {
-    ...(query.direction && query.direction !== 'SINGLE'
-      ? { direction: query.direction }
-      : {}),
     cycle: cycleSummaryOf(cycle),
     surveyType,
+    direction,
     provisional,
     operator: operatorSummaryOf(operator, airport),
     overall: {
@@ -260,17 +246,15 @@ function questionRows(tree: SurveyTreeView, rows: Map<string, ScoreRowView>, com
 
 export async function operatorQuestions(ctx: RequestContext, acoId: string, query: OperatorReportQuery): Promise<OperatorQuestionsDto> {
   const { operator, selection, rows, tree } = await loadOperatorInputs(ctx, acoId, query);
-  const { cycle, surveyType, provisional } = selection;
+  const { cycle, surveyType, direction, provisional } = selection;
   const [airport, assessments] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    loadSubmittedCustomerAssessments(cycle.id, operator.id, surveyType, query.direction ?? 'SINGLE'),
+    loadSubmittedCustomerAssessments(cycle.id, operator.id, surveyType, direction),
   ]);
   return {
-    ...(query.direction && query.direction !== 'SINGLE'
-      ? { direction: query.direction }
-      : {}),
     cycle: cycleSummaryOf(cycle),
     surveyType,
+    direction,
     provisional,
     operator: operatorSummaryOf(operator, airport),
     questions: questionRows(tree, rows, commentCounts(assessments)),

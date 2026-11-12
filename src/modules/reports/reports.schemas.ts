@@ -4,14 +4,21 @@ import { idSchema } from '../../core/ids.js';
 
 export const SURVEY_TYPES = ['DOMESTIC', 'INTERNATIONAL'] as const;
 export const surveyTypeSchema = z.enum(SURVEY_TYPES);
-export const reportDirectionSchema = z.enum([
-  'SINGLE',
-  'IMPORT',
-  'EXPORT',
-]);
 export type SurveyType = z.infer<typeof surveyTypeSchema>;
 
 export const CYCLE_TYPES = ['DOMESTIC', 'INTERNATIONAL', 'BOTH'] as const;
+
+export const ANSWER_MODES = ['SINGLE', 'IMPORT_EXPORT'] as const;
+export type AnswerMode = (typeof ANSWER_MODES)[number];
+
+/** The figures a report shows: a SINGLE cycle's, or one direction of an IMPORT_EXPORT cycle. */
+export const REPORT_DIRECTIONS = ['SINGLE', 'IMPORT', 'EXPORT'] as const;
+export const reportDirectionSchema = z.enum(REPORT_DIRECTIONS);
+export type ReportDirection = z.infer<typeof reportDirectionSchema>;
+
+/** `?direction=`: which side of an IMPORT_EXPORT cycle to show (IMPORT when omitted); a SINGLE cycle ignores it. */
+export const requestedDirectionSchema = z.enum(['IMPORT', 'EXPORT']);
+export type RequestedDirection = z.infer<typeof requestedDirectionSchema>;
 
 /** Every mean on the wire is 2 dp or `null` (no score / suppressed). */
 const mean = z.number().nullable();
@@ -28,6 +35,7 @@ export const cycleSummary = z.object({
   code: z.string(),
   name: z.string(),
   type: z.enum(CYCLE_TYPES),
+  answerMode: z.enum(ANSWER_MODES),
   status: z.string(),
   /** Assessment window as ISO instants; the dashboard's "cycle strip". */
   assessment: z.object({ start: z.string(), end: z.string() }).nullable(),
@@ -103,14 +111,15 @@ export type NationalTableRowDto = z.infer<typeof nationalTableRow>;
 export const operatorReportQuery = z.object({
   cycleId: idSchema.optional(),
   surveyType: surveyTypeSchema.optional(),
-  direction: reportDirectionSchema.optional(),
+  direction: requestedDirectionSchema.optional(),
 });
 export type OperatorReportQuery = z.infer<typeof operatorReportQuery>;
 
 export const operatorReportResponse = z.object({
-  direction: reportDirectionSchema.optional(),
   cycle: cycleSummary,
   surveyType: surveyTypeSchema,
+  /** The direction the figures are in: SINGLE on a SINGLE cycle, else the requested one (IMPORT by default). */
+  direction: reportDirectionSchema,
   /** True while the cycle is not SCORED: the figures come from a nightly (or manual) provisional run. */
   provisional: z.boolean(),
   operator: operatorSummary,
@@ -152,9 +161,9 @@ export const questionReportRow = z.object({
 export type QuestionReportRowDto = z.infer<typeof questionReportRow>;
 
 export const operatorQuestionsResponse = z.object({
-  direction: reportDirectionSchema.optional(),
   cycle: cycleSummary,
   surveyType: surveyTypeSchema,
+  direction: reportDirectionSchema,
   provisional: z.boolean(),
   operator: operatorSummary,
   questions: z.array(questionReportRow),
@@ -184,9 +193,9 @@ export const airportOperatorRow = z.object({
 export type AirportOperatorRowDto = z.infer<typeof airportOperatorRow>;
 
 export const airportReportResponse = z.object({
-  direction: reportDirectionSchema.optional(),
   cycle: cycleSummary,
   surveyType: surveyTypeSchema,
+  direction: reportDirectionSchema,
   provisional: z.boolean(),
   airport: airportSummary,
   overall: airportLevel.extend({ rank: z.number().nullable(), rankOf: z.number() }),
@@ -202,9 +211,9 @@ export const nationalReportQuery = operatorReportQuery;
 export type NationalReportQuery = z.infer<typeof nationalReportQuery>;
 
 export const nationalReportResponse = z.object({
-  direction: reportDirectionSchema.optional(),
   cycle: cycleSummary,
   surveyType: surveyTypeSchema,
+  direction: reportDirectionSchema,
   provisional: z.boolean(),
   airports: z.array(
     airportSummary.extend({
@@ -249,13 +258,14 @@ export type NationalReportDto = z.infer<typeof nationalReportResponse>;
 export const MAX_COMPARED_CYCLES = 6;
 
 export const comparisonQuery = z.object({
-  direction: reportDirectionSchema.optional(),
   acoId: idSchema,
   cycleIds: z
     .string()
     .transform((value) => [...new Set(value.split(',').map((part) => part.trim()).filter((part) => part !== ''))])
     .pipe(z.array(idSchema).min(1).max(MAX_COMPARED_CYCLES)),
   surveyType: surveyTypeSchema.optional(),
+  /** Applied to each IMPORT_EXPORT cycle; SINGLE cycles show their SINGLE figures. */
+  direction: requestedDirectionSchema.optional(),
 });
 export type ComparisonQuery = z.infer<typeof comparisonQuery>;
 
@@ -277,10 +287,12 @@ const comparisonRow = z.object({
 export type ComparisonRowDto = z.infer<typeof comparisonRow>;
 
 export const comparisonResponse = z.object({
-  direction: reportDirectionSchema.optional(),
   operator: operatorSummary,
   surveyType: surveyTypeSchema,
-  cycles: z.array(cycleSummary.extend({ provisional: z.boolean() })),
+  /** SINGLE when every compared cycle is; otherwise the direction shown for the IMPORT_EXPORT ones. */
+  direction: reportDirectionSchema,
+  /** `direction` per cycle: what its `values` are in. */
+  cycles: z.array(cycleSummary.extend({ provisional: z.boolean(), direction: reportDirectionSchema })),
   overall: z.array(comparisonValue.extend({ rank: z.number().nullable(), rankOf: z.number() })),
   categories: z.array(comparisonRow),
   subcategories: z.array(comparisonRow),
@@ -293,10 +305,10 @@ export type ComparisonDto = z.infer<typeof comparisonResponse>;
 export const EXPORT_SCOPES = ['operator', 'airport', 'national'] as const;
 
 export const exportQuery = z.object({
-  direction: reportDirectionSchema.optional(),
   scope: z.enum(EXPORT_SCOPES),
   cycleId: idSchema.optional(),
   surveyType: surveyTypeSchema.optional(),
+  direction: requestedDirectionSchema.optional(),
   acoId: idSchema.optional(),
   airportId: idSchema.optional(),
   format: z.enum(['csv']).default('csv'),

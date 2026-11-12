@@ -10,14 +10,13 @@ import { idString, toId } from '../../core/ids.js';
 import { findAirportsByIds } from '../airports/airports.service.js';
 import { listSubmitted } from '../assessments/assessments.service.js';
 import type { CycleDoc } from '../cycles/cycles.model.js';
-import { findCycleDoc, findCyclesByStatus } from '../cycles/cycles.service.js';
+import { cycleAnswerMode, findCycleDoc, findCyclesByStatus } from '../cycles/cycles.service.js';
 import { listParticipants } from '../cycles/participants.service.js';
 import { MarketShareModel, type MarketShareDoc } from '../organisations/market-shares.model.js';
 import { getSettingsDoc } from '../settings/settings.service.js';
 import { getSurveyTree } from '../surveys/surveys.service.js';
 
-import type { Rating, ScoringSettings, SubmittedAssessment, SurveyQuestion, SurveyStructure } from './engine/index.js';
-import type { ResponseCounts } from './scores.model.js';
+import type { AnswerMode, Rating, ScoringSettings, SubmittedAssessment, SurveyQuestion, SurveyStructure } from './engine/index.js';
 
 // --- cycles ----------------------------------------------------------------
 
@@ -25,6 +24,11 @@ export async function loadCycle(cycleId: string): Promise<CycleDoc> {
   const cycle = await findCycleDoc(cycleId);
   if (!cycle) throw new AppError('NOT_FOUND', 'Cycle not found');
   return cycle;
+}
+
+/** How the cycle's assessments were answered, which decides the directions it is scored in. */
+export function answerModeOf(cycle: CycleDoc): AnswerMode {
+  return cycleAnswerMode(cycle);
 }
 
 /** The survey version a cycle pinned for a type, or null when the cycle does not run it. */
@@ -127,46 +131,27 @@ export async function loadSurvey(surveyId: string): Promise<LoadedSurvey> {
 
 // --- assessments -----------------------------------------------------------
 
-export interface SubmittedSet {
-  assessments: SubmittedAssessment[];
-  counts: ResponseCounts;
-}
-
 const RATINGS: readonly number[] = [1, 2, 3, 4, 5];
 
 function toRating(value: number | null): Rating | null {
   return value !== null && RATINGS.includes(value) ? (value as Rating) : null;
 }
 
-/** Every SUBMITTED assessment (CUSTOMER and SELF) of one operator for one survey type. */
-export async function loadSubmitted(cycleId: string, acoId: string, surveyType: SurveyType): Promise<SubmittedSet> {
+/** Every SUBMITTED assessment (CUSTOMER and SELF) of one operator for one survey type, with its answer mode and answer directions. */
+export async function loadSubmitted(cycleId: string, acoId: string, surveyType: SurveyType): Promise<SubmittedAssessment[]> {
   const views = (await listSubmitted(cycleId, acoId)).filter((view) => view.surveyType === surveyType);
-  const counts: ResponseCounts = { customer: 0, self: 0, FF: 0, CB: 0 };
-  const assessments = views.map((view): SubmittedAssessment => {
-    if (view.kind === 'SELF') counts.self += 1;
-    else {
-      counts.customer += 1;
-      if (view.customerType === 'FF') counts.FF += 1;
-      if (view.customerType === 'CB') counts.CB += 1;
-    }
-    return {
-      id: view.id,
-      kind: view.kind,
-      answerMode: view.answerMode,
-      ...(view.customerType
-        ? { customerType: view.customerType }
-        : {}),
-      answers: view.answers.map((answer) => ({
+  return views.map((view) => ({
+    id: view.id,
+    kind: view.kind,
+    ...(view.customerType ? { customerType: view.customerType } : {}),
+    answerMode: view.answerMode,
+    answers: view.answers.map((answer) => ({
       questionId: answer.questionId,
-        ...(answer.direction
-          ? { direction: answer.direction }
-          : {}),
-        rating: toRating(answer.rating),
-        na: answer.na,
-      })),
-    };
-  });
-  return { assessments, counts };
+      ...(answer.direction ? { direction: answer.direction } : {}),
+      rating: toRating(answer.rating),
+      na: answer.na,
+    })),
+  }));
 }
 
 // --- organisations: the cycle's market-share snapshot -----------------------

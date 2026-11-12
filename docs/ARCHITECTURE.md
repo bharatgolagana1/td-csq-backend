@@ -40,7 +40,7 @@ section 6 of this file — change the contract here first, then the code.
 
 ```
 src/
-  server.ts            boot: env → db → app → scheduler → listen; graceful shutdown
+  server.ts            boot: env → db (+ score-direction migration) → app → scheduler → listen; graceful shutdown
   app.ts               express app factory (helmet, cors, json, request id, pino-http, routers, error handler)
   config/env.ts        the ONLY reader of process.env (zod; exits listing every bad variable)
   core/
@@ -104,6 +104,18 @@ and why):
   (§6) keeps `cycles.operate` as its guard, but because the registry only lets
   a module name its own tasks the route's policy is `session` and the service
   asserts the task (403) and the PLATFORM scope.
+- **Answer modes.** A cycle is answered `SINGLE` (one rating per question) or
+  `IMPORT_EXPORT` (one for import and one for export cargo, scored side by
+  side). The mode is the cycle's (`cycles.answerMode`, fixed once published),
+  copied onto each assessment when it is created; documents written before
+  modes existed have none and read as `SINGLE`. `scores` / `airport_scores`
+  rows carry `direction: SINGLE|IMPORT|EXPORT` and it is part of their unique
+  keys. Boot (`server.ts`, the demo seed and the test reset) runs
+  `migrateScoreDirections()` (`modules/scoring/scores.migration.ts`) before
+  anything scores: rows without a direction become `SINGLE`, the legacy unique
+  indexes without `direction` are dropped (matched by key, whatever their
+  name) and the direction-keyed ones ensured. It is idempotent and logs what
+  it changed.
 
 Modules (in dependency order): `identity` (users, roles, tasks, matrix,
 memberships, me), `airports`, `organisations` (ACFI, ACO, airport orgs; market
@@ -197,15 +209,15 @@ Collections and key fields (indexes in brackets).
   `subcategories` `{ surveyId, categoryId, code, name, order }`;
   `questions` `{ surveyId, categoryId, subcategoryId?, code, text, help?, order, weightPct?, mandatory, commentMode: OPTIONAL|REQUIRED|REQUIRED_ON_LOW|NONE, stakeholderTypes: [FF|CB], followUp?: { prompt, options: string[] } (asked on Fair/Poor), active }`.
   A published survey version is immutable; editing creates the next DRAFT version. A cycle pins `surveyVersions { DOMESTIC?: surveyId, INTERNATIONAL?: surveyId }` at publish.
-- `cycles` `{ name, code, type: DOMESTIC|INTERNATIONAL|BOTH, tz, sampling { start, end }, assessment { start, end } (each { wall: 'YYYY-MM-DDTHH:mm', utc: Date }), minSampleSize, reminders { sampling { count, everyDays }, assessment { count, everyDays } }, participatingAirportIds, participatingAcoIds, surveyVersions, status: DRAFT|PUBLISHED|SAMPLING_OPEN|SAMPLING_CLOSED|ASSESSMENT_OPEN|ASSESSMENT_CLOSED|SCORED|ARCHIVED, publishedAt, publishedBy, marketShareFrozen: boolean, scoredAt }` [status, code unique]
+- `cycles` `{ name, code, type: DOMESTIC|INTERNATIONAL|BOTH, answerMode: SINGLE|IMPORT_EXPORT (default SINGLE; absent = SINGLE), tz, sampling { start, end }, assessment { start, end } (each { wall: 'YYYY-MM-DDTHH:mm', utc: Date }), minSampleSize, reminders { sampling { count, everyDays }, assessment { count, everyDays } }, participatingAirportIds, participatingAcoIds, surveyVersions, status: DRAFT|PUBLISHED|SAMPLING_OPEN|SAMPLING_CLOSED|ASSESSMENT_OPEN|ASSESSMENT_CLOSED|SCORED|ARCHIVED, publishedAt, publishedBy, marketShareFrozen: boolean, scoredAt }` [status, code unique]
 - `cycle_participants` `{ cycleId, acoId, airportId, surveyTypes: [DOMESTIC|INTERNATIONAL], requiredSampleSize, sampling { status: NOT_STARTED|IN_PROGRESS|LOCKED|UNLOCKED, selectedCount, lockedAt?, lockedBy?, unlockedAt?, unlockedBy?, unlockReason? }, stats { invited, started, completed }, selfAssessment { DOMESTIC?: status, INTERNATIONAL?: status } }` [cycleId+acoId unique]
 - `customers` `{ acoId, airportId, name, contactPerson, email (lowercase), phone, type: FF|CB, surveyType: DOMESTIC|INTERNATIONAL|BOTH, status: ACTIVE|INACTIVE, tags: string[], lastSampledCycleId?, importBatchId?, deletedAt? }` [acoId+email unique; acoId+status]. `deletedAt` set = deleted: out of the directory, the eligible list and the counters, history kept; adding or importing the same e-mail restores it (ACTIVE).
 - `customer_imports` `{ acoId, fileName, rows, accepted, rejected, errors: [{ row, field, message }], status: VALIDATED|COMMITTED, createdBy }`
 - `samples` `{ cycleId, acoId, customerId, surveyType, state: SELECTED|LOCKED|REMOVED, addedBy, addedAt, removedAt? }` [cycleId+acoId+customerId+surveyType unique]
 - `invitations` `{ cycleId, acoId, customerId, surveyType, assessmentId?, tokenHash, state: PENDING|SENT|OPENED|VERIFIED|SUBMITTED|EXPIRED|REVOKED, email, otp { hash, expiresAt, attempts }, sentAt, openedAt, verifiedAt, submittedAt, remindersSent, lastReminderAt, expiresAt }` [tokenHash unique; cycleId+acoId+state]
-- `assessments` `{ cycleId, acoId, airportId, surveyId, surveyType, kind: CUSTOMER|SELF, customerId?, customerType?: FF|CB, invitationId?, userId? (SELF), status: DRAFT|SUBMITTED, answers: [{ questionId, rating: 1..5|null, na: boolean, comment?, followUp?: string[] }], answeredCount, questionCount, startedAt, lastSavedAt, submittedAt }` [cycleId+acoId+kind; invitationId unique sparse]
-- `scores` `{ cycleId, acoId, surveyType, level: QUESTION|SUBCATEGORY|CATEGORY|OVERALL, refId, customer { mean, n, naCount, byType { FF { mean, n }, CB { mean, n } } }, self { mean, n }, suppressed?: 'INSUFFICIENT_RESPONSES', rank?, rankOf?, previous?: { cycleId, mean }, delta? }` [cycleId+acoId+surveyType+level+refId unique]
-- `airport_scores` `{ cycleId, airportId, surveyType, level, refId, mean, marketShareApplied, coveredSharePct, operators: [{ acoId, mean, sharePct, suppressed }], rank, rankOf }`
+- `assessments` `{ cycleId, acoId, airportId, surveyId, surveyType, kind: CUSTOMER|SELF, answerMode: SINGLE|IMPORT_EXPORT (the cycle's at creation; absent = SINGLE), customerId?, customerType?: FF|CB, invitationId?, userId? (SELF), status: DRAFT|SUBMITTED, answers: [{ questionId, direction?: IMPORT|EXPORT (IMPORT_EXPORT only: one answer per question and direction), rating: 1..5|null, na: boolean, comment?, followUp?: string[] }], answeredCount, questionCount (×2 on IMPORT_EXPORT), startedAt, lastSavedAt, submittedAt }` [cycleId+acoId+kind; invitationId unique sparse]
+- `scores` `{ cycleId, acoId, surveyType, direction: SINGLE|IMPORT|EXPORT, level: QUESTION|SUBCATEGORY|CATEGORY|OVERALL, refId, customer { mean, n, naCount, byType { FF { mean, n }, CB { mean, n } } }, self { mean, n }, suppressed?: 'INSUFFICIENT_RESPONSES', rank?, rankOf?, previous?: { cycleId, mean }, delta? }` [cycleId+acoId+surveyType+direction+level+refId unique]
+- `airport_scores` `{ cycleId, airportId, surveyType, direction: SINGLE|IMPORT|EXPORT, level, refId, mean, marketShareApplied, coveredSharePct, operators: [{ acoId, mean, sharePct, suppressed }], rank, rankOf }` [cycleId+airportId+surveyType+direction+level+refId unique]
 - `notifications` `{ channel: EMAIL|LOG, template, to, subject, body, vars, refs { cycleId?, acoId?, customerId?, invitationId?, userId? }, status: QUEUED|SENT|FAILED, error?, sentAt, resendOf? }` [refs.cycleId, status]
 - `jobs` `{ type, refId, slot, status: DONE|FAILED, ranAt, detail }` [type+refId+slot unique] — the scheduler's idempotency record.
 - `audit_log` `{ actorUserId?, actorEmail?, orgId?, action, entity, entityId, before?, after?, ip, requestId, at }` [entity+entityId, orgId+at]
@@ -251,9 +263,9 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /surveys/:id/preview?stakeholderType=FF` → the form exactly as an assessor sees it.
 
 ### cycles
-- `GET /cycles` [list] `cycles.view` (PLATFORM: all; ACO: cycles it participates in) → `{ id, code, name, type, status, sampling, assessment, minSampleSize, participants { airports, operators }, progress { locked, invited, completed } }`
-- `POST /cycles` `cycles.manage` (DRAFT) body `{ name, code, type, tz?, initiationDate?, sampling { start, end }, assessment { start, end }, minSampleSize, reminders, participatingAirportIds, participatingAcoIds, surveyVersions? }` — when `initiationDate` is given and windows are omitted the server derives them from `settings.defaults`.
-- `GET /cycles/:id` → cycle + participants list (`cycle_participants` joined with operator + airport) + survey versions + market-share frozen flag · `PATCH /cycles/:id` (DRAFT only; PUBLISHED allows extending end dates and reminder settings, audited)
+- `GET /cycles` [list] `cycles.view` (PLATFORM: all; ACO: cycles it participates in) → `{ id, code, name, type, answerMode, status, sampling, assessment, minSampleSize, participants { airports, operators }, progress { locked, invited, completed } }`
+- `POST /cycles` `cycles.manage` (DRAFT) body `{ name, code, type, answerMode? (default SINGLE), tz?, initiationDate?, sampling { start, end }, assessment { start, end }, minSampleSize, reminders, participatingAirportIds, participatingAcoIds, surveyVersions? }` — when `initiationDate` is given and windows are omitted the server derives them from `settings.defaults`.
+- `GET /cycles/:id` → cycle + participants list (`cycle_participants` joined with operator + airport) + survey versions + market-share frozen flag · `PATCH /cycles/:id` (DRAFT only; PUBLISHED allows extending end dates and reminder settings, audited). `answerMode` changes on a DRAFT only: after publishing a different mode is 412 `PRECONDITION_FAILED` "The answer mode is fixed once the cycle is published" (restating the current one is accepted). Every cycle DTO (list row, detail, `GET /cycles/current`) carries `answerMode`.
 - `POST /cycles/:id/publish` `cycles.publish` → validations: windows ordered, every participating airport's market shares total 100 (snapshot copied to `market_shares` with `cycleId`), surveys published; creates `cycle_participants`; e-mails ACO admins ("Commencement of assessment cycle"); status PUBLISHED (or SAMPLING_OPEN if the sampling window already started).
 - `POST /cycles/:id/transition` `cycles.operate` `{ to: SAMPLING_OPEN|SAMPLING_CLOSED|ASSESSMENT_OPEN|ASSESSMENT_CLOSED|SCORED|ARCHIVED, reason }` → manual, audited override of the clock (the scheduler performs the same transitions automatically at the window instants).
 - `GET /cycles/:id/participants` [list] `cycles.view` → per-ACO sampling + assessment progress · `GET /cycles/:id/monitoring` `monitoring.view` → `{ sampling { airports, operators, sampleRequired, sampleLocked, lockedOperators }, assessment { invited, started, completed, pending, completionRate }, byAirport: [{ airportId, iata, name, operators: [{ acoId, name, sampling, invited, completed }] }] }`
@@ -283,22 +295,24 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /public/assess/:token` public → `{ state, cycle { id, name, tz, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked, type: FF|CB }, submittedAt?, expiresAt }` (404 unknown; state EXPIRED after `expiresAt`; `tz` is the cycle's zone for showing `assessmentEnd`, `type` the stakeholder type the form will take). Moves SENT → OPENED.
 - `POST /public/assess/:token/otp` public, rate-limited 3/10 min → `{ sent: true, devOtp? }` (`devOtp` only when `DEMO_REVEAL_OTP=true`).
 - `POST /public/assess/:token/verify` `{ otp }` → `{ sessionToken, expiresAt }` (HS256, 12 h, `{ inv, asg, aco }`); 5 wrong attempts → `OTP_INVALID` until a new OTP is requested.
-- With header `x-csq-link-token`: `GET /public/assess/:token/form` → `{ survey, categories → subcategories → questions }` filtered to the customer's stakeholder type; `GET …/draft` → answers; `PATCH …/answers` `{ answers: [{ questionId, rating?, na?, comment?, followUp? }] }` (merge; returns progress); `GET …/readiness` → `{ answered, total, missing: [questionId] }`; `POST …/submit` → SUBMITTED (locks; invitation SUBMITTED; participant stats; e-mail thank-you).
+- With header `x-csq-link-token`: `GET /public/assess/:token/form` → `{ survey, categories → subcategories → questions }` filtered to the customer's stakeholder type; `GET …/draft` → answers; `PATCH …/answers` `{ answers: [{ questionId, direction?, rating?, na?, comment?, followUp? }] }` (merge by question and direction; returns progress; `direction: IMPORT|EXPORT` is required on an IMPORT_EXPORT assessment and refused on a SINGLE one); `GET …/readiness` → `{ answered, total, missing: [questionId] }` (IMPORT_EXPORT: `total` = questions × 2, `missing` entries `questionId:IMPORT|EXPORT`); the form's `assessment` carries `answerMode`; `POST …/submit` → SUBMITTED (locks; invitation SUBMITTED; participant stats; e-mail thank-you).
 
 ### assessments (signed-in)
 - `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType`) → history grid rows `{ id, cycle, kind, customerType, assessorName, assessorEmailMasked, status, submittedAt, score }`
 - `GET /assessments/:id` → read-only return (answers with question text); a customer's identity is hidden from non-platform users unless `settings.revealAssessorIdentity` — `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
 - `GET /assessments/self/:cycleId/:surveyType` `assessments.self` → the ACO's self-assessment (created on first access) · `PATCH …/answers` · `POST …/submit`.
-- `GET /assessments/export?cycleId=` `assessments.view` → CSV.
+- Import / export: history rows also carry `importScore` and `exportScore` — `score` is set on a SINGLE assessment, the pair on an IMPORT_EXPORT one, the others null. `GET /assessments/:id` adds `answerMode` and on IMPORT_EXPORT lists every question twice, IMPORT then EXPORT, each answer with its `direction` (as do the draft and self-assessment answers).
+- `GET /assessments/export?cycleId=` `assessments.view` → CSV (one line per question and direction; columns end `answerMode, direction, importScore, exportScore`).
 
 ### scoring and reports
-- `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`).
+- `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`); the summary lists the `directions` scored.
+- **Direction.** Every report below takes `direction?: IMPORT|EXPORT`, resolved per cycle: a SINGLE cycle reports `SINGLE` (the parameter is ignored), an IMPORT_EXPORT cycle the requested side, `IMPORT` when omitted. Every report response carries the resolved `direction: SINGLE|IMPORT|EXPORT`, and its `cycle` summary the cycle's `answerMode`. Reports read scores only through the scoring module's `getScores` / `getAirportScores` / `nationalTable`, each given the direction.
 - `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, assessments { total, customer, self } (SUBMITTED assessments by kind, counted live), nationalTable: [{ airportIata, airportName, rating, rank, rankOf, isOwn }] (`isOwn` on the operator's airport), airportsTotal }` (`airportsTotal` = active, i.e. Phase-I, airports on the platform, so the UI can say "+ N more airports live")
 - `GET /reports/operator/:acoId/questions?cycleId=` → question-level table with comments count
 - `GET /reports/airport/:airportId?cycleId=` `reports.airport` → weighted airport score, operators table (platform/airport only), categories
 - `GET /reports/national?cycleId=&surveyType=` `reports.national` → airports ranked, operators ranked, category averages, participation
-- `GET /reports/comparison?acoId=&cycleIds=a,b` `reports.operator` → side-by-side
-- `GET /reports/export?scope=&cycleId=` → CSV/XLSX
+- `GET /reports/comparison?acoId=&cycleIds=a,b&direction=` `reports.operator` → side-by-side; the direction is resolved per cycle (SINGLE cycles show their SINGLE figures) and each `cycles[]` entry carries its own `direction`; the top-level `direction` is SINGLE when every cycle is SINGLE, else the side shown for the IMPORT_EXPORT ones
+- `GET /reports/export?scope=&cycleId=&direction=` → CSV/XLSX; the file name ends `-import` / `-export` when the direction is not SINGLE
 
 ### notifications, audit, settings
 - `GET /notifications` [list] `notifications.view` (filters `cycleId, acoId, template, status`) · `POST /notifications/:id/resend` `notifications.send`
@@ -333,7 +347,9 @@ registration link session), or a task code. All `[list]` endpoints accept
   One invitation ⇒ one assessment; submitted answers are read-only.
 - **Form rules.** Every active question must be answered (rating or NA);
   comment required when `commentMode` says so (REQUIRED_ON_LOW ⇒ Fair/Poor);
-  follow-up options shown on Fair/Poor. Progress = answered / total. Autosave
+  follow-up options shown on Fair/Poor. On an IMPORT_EXPORT assessment every
+  rule applies per direction: each question is answered for IMPORT and for
+  EXPORT, so total = questions × 2. Progress = answered / total. Autosave
   is a merge PATCH; the client may batch.
 - **Scoring.** Rating values 1–5 (Poor=1 … Excellent=5). NA excluded:
   mean over non-NA ratings. Question score = mean over SUBMITTED CUSTOMER
@@ -348,6 +364,13 @@ registration link session), or a task code. All `[list]` endpoints accept
   normalised by the covered share (`coveredSharePct`); `marketShareApplied` is
   false when no snapshot exists (equal weights). Previous-cycle values and
   deltas come from the most recent SCORED cycle of the same type.
+  **Directions.** A SINGLE cycle is scored once (`direction: SINGLE`); an
+  IMPORT_EXPORT cycle twice, IMPORT and EXPORT, each from that side's answers,
+  with its own ranks, airport roll-ups and national table. Assessments
+  answered in the other mode are left out; a re-run drops the rows of a
+  direction the cycle's mode no longer produces. Previous-cycle values compare
+  like with like: IMPORT with the previous cycle's IMPORT, none when that
+  cycle has no rows in the direction.
 - **Confidentiality.** An ACO reads only its own operator report; the national
   table it sees carries airport ratings and ranks, never another operator's
   figures. Platform roles see everything.

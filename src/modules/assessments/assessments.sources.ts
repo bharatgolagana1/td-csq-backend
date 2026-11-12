@@ -11,13 +11,15 @@ import { getCycle, getParticipant } from '../cycles/cycles.service.js';
 import { getFormForStakeholder, getSurveyTree } from '../surveys/surveys.service.js';
 
 import { formFromStakeholderForm, formFromTree, type AssessmentForm } from './assessments.form.js';
-import type { CustomerType } from './assessments.model.js';
+import type { AnswerMode, CustomerType } from './assessments.model.js';
 
 export interface CycleRef {
   id: string;
   code: string;
   name: string;
   status: CycleStatus;
+  /** Copied onto every assessment of the cycle when it is created. */
+  answerMode: AnswerMode;
   /** Survey version pinned per survey type at publish. */
   surveyVersions: Partial<Record<SurveyType, string | null>>;
 }
@@ -48,6 +50,7 @@ export async function cycleRef(ctx: AnyContext, cycleId: string): Promise<CycleR
     code: cycle.code,
     name: cycle.name,
     status: cycle.status,
+    answerMode: cycle.answerMode,
     surveyVersions: {
       ...(cycle.surveyVersions.DOMESTIC ? { DOMESTIC: idString(cycle.surveyVersions.DOMESTIC) } : {}),
       ...(cycle.surveyVersions.INTERNATIONAL ? { INTERNATIONAL: idString(cycle.surveyVersions.INTERNATIONAL) } : {}),
