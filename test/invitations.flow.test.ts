@@ -15,6 +15,7 @@ import { activateOpenCycles } from '../src/modules/invitations/invitations.servi
 import { NotificationModel } from '../src/modules/notifications/notifications.model.js';
 import { SampleModel } from '../src/modules/sampling/sampling.model.js';
 
+import { remarksFor } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { answersFor, createTestCycle, createTestSurvey, formQuestionIds, mailsFor, otpFromMail, tokenFromMail, type TestSurvey } from './invitations.fixtures.js';
 
@@ -148,6 +149,8 @@ describe('the participant completes the assessment through the link', () => {
     expect(batch1.body.data).toMatchObject({ answered: 2, total: 3 });
     const batch2 = await t.anon.patch(`${PUBLIC}/${token}/answers`).set(LINK_HEADER, session).send({ answers: answersFor(questionIds.slice(2), 3) });
     expect(batch2.body.data).toMatchObject({ answered: 3, total: 3, pct: 100 });
+    const remarks = await t.anon.patch(`${PUBLIC}/${token}/remarks`).set(LINK_HEADER, session).send({ sectionRemarks: remarksFor(form.body.data) });
+    expect(remarks.status, JSON.stringify(remarks.body)).toBe(200);
     expect((await t.anon.get(`${PUBLIC}/${token}/readiness`).set(LINK_HEADER, session)).body.data.complete).toBe(true);
 
     const submit = await t.anon.post(`${PUBLIC}/${token}/submit`).set(LINK_HEADER, session);

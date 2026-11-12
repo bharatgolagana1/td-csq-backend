@@ -18,7 +18,7 @@ import { getParticipant } from '../src/modules/cycles/cycles.service.js';
 import { fromInstant } from '../src/modules/cycles/domain/windows.js';
 import { setCurrentShare } from '../src/modules/organisations/market-share.service.js';
 
-import { createTestCustomer, createTestSurvey, type TestSurvey } from './assessments.fixtures.js';
+import { createTestCustomer, createTestSurvey, remarkEverySection, type TestSurvey } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { airportIdByIata, createTestOperator, expectError } from './helpers/fixtures.js';
 
@@ -170,6 +170,7 @@ async function submitCustomerAssessment(acoId: string, customerId: string, answe
   const invitationId = newId();
   const created = await getOrCreateForInvitation({ _id: invitationId, cycleId, acoId, customerId, surveyType: 'DOMESTIC' });
   await patchAnswers(created.id, answers);
+  await remarkEverySection(created.id);
   const link: LinkSession = {
     audience: 'participant',
     subject: idString(invitationId),

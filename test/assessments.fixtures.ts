@@ -10,6 +10,8 @@ import { withTransaction } from '../src/core/db.js';
 import type { CycleStatus, SurveyType } from '../src/core/events.js';
 import { idString, toId } from '../src/core/ids.js';
 import type { CustomerType } from '../src/modules/assessments/assessments.model.js';
+import type { SectionRemarkInput } from '../src/modules/assessments/assessments.schemas.js';
+import { getForm, patchSectionRemarks } from '../src/modules/assessments/assessments.service.js';
 import { CustomerModel } from '../src/modules/customers/customers.model.js';
 import { CycleModel } from '../src/modules/cycles/cycles.model.js';
 import type { AnswerMode, CycleType } from '../src/modules/cycles/domain/types.js';
@@ -133,6 +135,18 @@ export async function createTestSurvey(type: SurveyType): Promise<TestSurvey> {
     }
   }
   return { id, type, q, section };
+}
+
+// --- section remarks ----------------------------------------------------------
+
+/** A remark for every section of a form (`PATCH …/remarks` entries): submit waits for them besides the answers. */
+export function remarksFor(form: { categories: readonly { id: string; name: string }[] }): SectionRemarkInput[] {
+  return form.categories.map((category) => ({ categoryId: category.id, remark: `Remarks on ${category.name}` }));
+}
+
+/** Saves `remarksFor` the assessment's form through the service. */
+export async function remarkEverySection(assessmentId: string): Promise<void> {
+  await patchSectionRemarks(assessmentId, remarksFor(await getForm(assessmentId)));
 }
 
 // --- customers --------------------------------------------------------------

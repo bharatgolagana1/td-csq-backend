@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { idString } from '../src/core/ids.js';
 import { AirportModel } from '../src/modules/airports/airports.model.js';
+import { AssessmentModel } from '../src/modules/assessments/assessments.model.js';
 import { RoleModel } from '../src/modules/identity/roles.model.js';
 import { UserModel } from '../src/modules/identity/users.model.js';
 import { OrganisationModel } from '../src/modules/organisations/organisations.model.js';
@@ -134,6 +135,21 @@ describe('seed:demo', () => {
     expect(report.feedbackDistribution.find((bucket: { label: string }) => bucket.label === 'Excellent').count).toBeGreaterThan(0);
     expect(report.nationalTable).toHaveLength(10);
     expect(report.nationalTable[0].rank).toBe(1);
+  });
+
+  it('gives every submitted assessment, customer and self, a remark on each of its four sections', async () => {
+    const submitted = await AssessmentModel.find({ status: 'SUBMITTED' }, { kind: 1, sectionRemarks: 1 }).lean();
+    expect(submitted.length).toBeGreaterThan(100);
+    expect(submitted.some((doc) => doc.kind === 'SELF')).toBe(true);
+    for (const doc of submitted) {
+      expect(doc.sectionRemarks).toHaveLength(4);
+      expect(doc.sectionRemarks!.every((entry) => entry.remark.length > 0)).toBe(true);
+    }
+    const acoId = operatorId(first, 'DEL-CTS');
+    const [row] = (await superAdmin.get(`/api/v1/assessments?acoId=${acoId}&status=SUBMITTED&kind=CUSTOMER&pageSize=1`)).body.data;
+    const detail = await superAdmin.get(`/api/v1/assessments/${row.id}`);
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    expect(detail.body.data.sectionRemarks).toHaveLength(4);
   });
 
   it('shows the live cycle mid-selection: 37 / 50 for Mumbai, two locked, one not started', async () => {

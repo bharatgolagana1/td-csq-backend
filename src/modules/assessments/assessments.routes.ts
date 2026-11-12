@@ -12,7 +12,7 @@ import {
   patchAnswersBody,
   patchAnswersResponse,
   patchSectionRemarksBody,
-  sectionRemarkResponse,
+  patchSectionRemarksResponse,
   selfAssessmentResponse,
   selfParams,
 } from './assessments.schemas.js';
@@ -69,32 +69,21 @@ export const assessmentsRoutes = [
     response: patchAnswersResponse,
     handler: ({ ctx, params, body }) => patchSelfAnswers(ctx, params.cycleId, params.surveyType, body.answers),
   }),
-
-   route({
+  route({
     method: 'patch',
     path: '/self/:cycleId/:surveyType/remarks',
     policy: { kind: 'task', task: 'assessments.self' },
-    summary: 'Save section remarks for the operator self-assessment',
+    summary: 'Autosave self-assessment section remarks (merge by category; an empty remark clears it)',
     params: selfParams,
     body: patchSectionRemarksBody,
-    response: z.object({
-      sectionRemarks: z.array(sectionRemarkResponse),
-      lastSavedAt: z.string(),
-    }),
-    handler: ({ ctx, params, body }) =>
-      patchSelfSectionRemarks(
-        ctx,
-        params.cycleId,
-        params.surveyType,
-        body.sectionRemarks,
-      ),
+    response: patchSectionRemarksResponse,
+    handler: ({ ctx, params, body }) => patchSelfSectionRemarks(ctx, params.cycleId, params.surveyType, body.sectionRemarks),
   }),
-  
   route({
     method: 'post',
     path: '/self/:cycleId/:surveyType/submit',
     policy: { kind: 'task', task: 'assessments.self' },
-    summary: 'Submit the self-assessment (every question answered); locks it',
+    summary: 'Submit the self-assessment (every question answered, every section remarked); locks it',
     params: selfParams,
     response: assessmentResponse,
     handler: ({ ctx, params }) => submitSelf(ctx, params.cycleId, params.surveyType),
@@ -104,7 +93,7 @@ export const assessmentsRoutes = [
     method: 'get',
     path: '/:id',
     policy: { kind: 'task', task: 'assessments.view' },
-    summary: 'Read-only return: every form question with its answer',
+    summary: 'Read-only return: every form question with its answer, and the section remarks',
     params: assessmentParams,
     response: assessmentDetailResponse,
     handler: ({ ctx, params }) => getAssessment(ctx, params.id),

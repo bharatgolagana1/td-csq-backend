@@ -25,11 +25,12 @@ export const answerResponse = z.object({
   followUp: z.array(z.string()),
 });
 export type AnswerDto = z.infer<typeof answerResponse>;
+
+/** One section's remark: free text about a form category as a whole (one per category, whatever the answer mode). */
 export const sectionRemarkResponse = z.object({
   categoryId: z.string(),
   remark: z.string(),
 });
-
 export type SectionRemarkDto = z.infer<typeof sectionRemarkResponse>;
 
 /** What every path returns about an assessment (no answers, no identity). */
@@ -116,12 +117,12 @@ export const assessmentFormResponse = z.object({
 });
 export type AssessmentFormDto = z.infer<typeof assessmentFormResponse>;
 
-/** `GET …/draft`: the answers saved so far. */
+/** `GET …/draft`: the answers and section remarks saved so far. */
 export const draftResponse = z.object({
   id: z.string(),
   status: z.enum(ASSESSMENT_STATUSES),
   answers: z.array(answerResponse),
-  sectionRemarks: z.array(sectionRemarkResponse).optional(),
+  sectionRemarks: z.array(sectionRemarkResponse),
   progress: progressResponse,
   lastSavedAt: z.string().nullable(),
   submittedAt: z.string().nullable(),
@@ -144,25 +145,33 @@ export const answerInputSchema = z
 export const patchAnswersBody = z.object({ answers: z.array(answerInputSchema).max(500) }).strict();
 export type PatchAnswersInput = z.infer<typeof patchAnswersBody>;
 
-export const sectionRemarkInputSchema = z.object({
-  categoryId: z.string().trim().min(1).max(64),
-  remark: z.string().trim().max(2000),
-}).strict();
-
-export const patchSectionRemarksBody = z.object({
-  sectionRemarks: z.array(sectionRemarkInputSchema).max(100),
-}).strict();
-
-export type PatchSectionRemarksInput =
-  z.infer<typeof patchSectionRemarksBody>;
-
 export const patchAnswersResponse = progressResponse.extend({ lastSavedAt: z.string().nullable() });
 export type PatchAnswersResult = z.infer<typeof patchAnswersResponse>;
+
+/** One entry of `PATCH …/remarks`; an empty remark (after trimming) clears the section's. */
+export const sectionRemarkInputSchema = z
+  .object({
+    categoryId: z.string().trim().min(1).max(64),
+    remark: z.string().trim().max(2000),
+  })
+  .strict();
+export type SectionRemarkInput = z.infer<typeof sectionRemarkInputSchema>;
+
+/** `PATCH …/remarks` body: a merge by section; each entry replaces (or, empty, clears) its category's remark. */
+export const patchSectionRemarksBody = z.object({ sectionRemarks: z.array(sectionRemarkInputSchema).max(100) }).strict();
+export type PatchSectionRemarksInput = z.infer<typeof patchSectionRemarksBody>;
+
+/** Every remark saved after the merge. */
+export const patchSectionRemarksResponse = z.object({ sectionRemarks: z.array(sectionRemarkResponse), lastSavedAt: z.string() });
+export type PatchSectionRemarksResult = z.infer<typeof patchSectionRemarksResponse>;
 
 export const readinessResponse = z.object({
   answered: z.number(),
   total: z.number(),
   missing: z.array(z.string()),
+  /** Form categories still without a remark, in form order; submit waits for them too. */
+  missingSectionRemarks: z.array(z.string()),
+  /** Every slot answered and every section remarked. */
   complete: z.boolean(),
 });
 export type ReadinessDto = z.infer<typeof readinessResponse>;
@@ -172,8 +181,8 @@ export type ReadinessDto = z.infer<typeof readinessResponse>;
 export const selfParams = z.object({ cycleId: idSchema, surveyType: z.enum(SURVEY_TYPES) });
 export type SelfParams = z.infer<typeof selfParams>;
 
-/** `GET /assessments/self/:cycleId/:surveyType`: the form and the saved answers in one payload. */
-export const selfAssessmentResponse = assessmentFormResponse.extend({ answers: z.array(answerResponse), sectionRemarks: z.array(sectionRemarkResponse).optional(), });
+/** `GET /assessments/self/:cycleId/:surveyType`: the form, the saved answers and section remarks in one payload. */
+export const selfAssessmentResponse = assessmentFormResponse.extend({ answers: z.array(answerResponse), sectionRemarks: z.array(sectionRemarkResponse) });
 export type SelfAssessmentDto = z.infer<typeof selfAssessmentResponse>;
 
 // --- signed-in history ------------------------------------------------------
@@ -234,6 +243,8 @@ export const assessmentDetailResponse = historyRowResponse.extend({
   answerMode: z.enum(ANSWER_MODES),
   survey: formSurveyResponse,
   answers: z.array(detailAnswerResponse),
+  /** The section remarks in form order (sections without one are left out). */
+  sectionRemarks: z.array(sectionRemarkResponse),
 });
 export type AssessmentDetailDto = z.infer<typeof assessmentDetailResponse>;
 

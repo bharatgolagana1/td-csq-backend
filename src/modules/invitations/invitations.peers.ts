@@ -16,9 +16,11 @@ import type {
   DraftDto,
   PatchAnswersInput,
   PatchAnswersResult,
+  PatchSectionRemarksInput,
+  PatchSectionRemarksResult,
   ReadinessDto,
 } from '../assessments/assessments.schemas.js';
-import { getDraft, getForm, getOrCreateForInvitation, patchAnswers, readiness, submit } from '../assessments/assessments.service.js';
+import { getDraft, getForm, getOrCreateForInvitation, patchAnswers, patchSectionRemarks, readiness, submit } from '../assessments/assessments.service.js';
 import { getCustomer } from '../customers/customers.service.js';
 import { bumpParticipantStats, getCycle, getParticipant } from '../cycles/cycles.service.js';
 import { CYCLE_STATUSES, CYCLE_TYPES, type CycleStatus, type CycleType, type ReminderPolicy } from '../cycles/domain/types.js';
@@ -202,6 +204,10 @@ export function assessmentDraft(assessmentId: string): Promise<DraftDto> {
 
 export function patchAssessmentAnswers(assessmentId: string, answers: PatchAnswersInput['answers']): Promise<PatchAnswersResult> {
   return patchAnswers(assessmentId, answers);
+}
+
+export function patchAssessmentRemarks(assessmentId: string, sectionRemarks: PatchSectionRemarksInput['sectionRemarks']): Promise<PatchSectionRemarksResult> {
+  return patchSectionRemarks(assessmentId, sectionRemarks);
 }
 
 export function assessmentReadiness(assessmentId: string): Promise<ReadinessDto> {

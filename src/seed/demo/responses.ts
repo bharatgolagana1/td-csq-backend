@@ -2,10 +2,10 @@
 // operator's quality (skewed to Excellent / Very Good, a little NA, Fair /
 // Poor with the required comment and follow-up options) and the participant
 // flow itself — the link from the invitation e-mail, the OTP from the OTP
-// e-mail (`revealOtp`), the form, autosave and submit — all through the
-// invitations and assessments services so every event and e-mail happens.
-// An IMPORT_EXPORT cycle's assessors answer every question twice, export a
-// touch lower than import.
+// e-mail (`revealOtp`), the form, autosave, a remark per section and submit —
+// all through the invitations and assessments services so every event and
+// e-mail happens. An IMPORT_EXPORT cycle's assessors answer every question
+// twice, export a touch lower than import; each section still gets one remark.
 import type { RequestContext } from '../../core/auth/session.js';
 import {
   formFromStakeholderForm,
@@ -16,7 +16,8 @@ import {
   type FormQuestionPlace,
 } from '../../modules/assessments/assessments.form.js';
 import type { AnswerMode, Rating } from '../../modules/assessments/assessments.model.js';
-import { patchAnswers, patchSelfAnswers, submit, submitSelf } from '../../modules/assessments/assessments.service.js';
+import type { SectionRemarkInput } from '../../modules/assessments/assessments.schemas.js';
+import { patchAnswers, patchSectionRemarks, patchSelfAnswers, patchSelfSectionRemarks, submit, submitSelf } from '../../modules/assessments/assessments.service.js';
 import type { SurveyType } from '../../modules/cycles/domain/types.js';
 import { invitationsConfig } from '../../modules/invitations/invitations.config.js';
 import type { InvitationDto } from '../../modules/invitations/invitations.schemas.js';
@@ -25,7 +26,16 @@ import { participantStatus, requestOtp, verifyOtp } from '../../modules/invitati
 import { listNotifications } from '../../modules/notifications/notifications.service.js';
 import { getFormForStakeholder, getSurveyTree } from '../../modules/surveys/surveys.service.js';
 
-import { GENERIC_LOW_COMMENTS, LOW_RATING_COMMENTS, POSITIVE_COMMENTS, SELF_COMMENTS } from './names.js';
+import {
+  GENERIC_LOW_COMMENTS,
+  GENERIC_SECTION_REMARKS,
+  GENERIC_SELF_SECTION_REMARKS,
+  LOW_RATING_COMMENTS,
+  POSITIVE_COMMENTS,
+  SECTION_REMARKS,
+  SELF_COMMENTS,
+  SELF_SECTION_REMARKS,
+} from './names.js';
 import type { Rng } from './prng.js';
 
 const MINUTE = 60_000;
@@ -98,6 +108,13 @@ export function generateAnswers(form: AssessmentForm, profile: RatingProfile, rn
     { ...answerFor(place, profile, mood, rng, options), direction: 'IMPORT' as const },
     { ...answerFor(place, profile, mood + EXPORT_SHIFT, rng, options), direction: 'EXPORT' as const },
   ]);
+}
+
+/** One short remark per section of the form (submit needs them all), from the head's pool. */
+export function generateSectionRemarks(form: AssessmentForm, rng: Rng, options: { self: boolean }): SectionRemarkInput[] {
+  const pools = options.self ? SELF_SECTION_REMARKS : SECTION_REMARKS;
+  const generic = options.self ? GENERIC_SELF_SECTION_REMARKS : GENERIC_SECTION_REMARKS;
+  return form.categories.map((category) => ({ categoryId: category.id, remark: rng.pick(pools[category.code] ?? generic) }));
 }
 
 // --- forms -------------------------------------------------------------------
@@ -233,6 +250,8 @@ export async function respondToInvitations(
   const windowEnd = new Date(cycle.assessmentEnd.getTime() - 3 * HOUR);
   const result: ResponseResult = { invited: invitations.length, submitted: 0, inProgress: 0, opened: 0 };
   const { links } = invitationsConfig();
+  // A stream of their own, so adding remarks never reshuffled the outcomes and ratings drawn from `rng`.
+  const remarkRng = rng.fork('remarks');
 
   for (const invitation of invitations) {
     const outcome = outcomes.get(invitation.id) ?? 'UNTOUCHED';
@@ -261,6 +280,7 @@ export async function respondToInvitations(
     }
 
     await patchAnswers(verified.assessmentId, generateAnswers(form, plan.profile, rng, { naRate: 0.04, self: false, answerMode: cycle.answerMode }));
+    await patchSectionRemarks(verified.assessmentId, generateSectionRemarks(form, remarkRng, { self: false }));
     const session = await links.verify(verified.sessionToken, 'participant');
     await submit(session, verified.assessmentId);
     const submittedAt = new Date(verifiedAt.getTime() + rng.int(8, 40) * MINUTE);
@@ -284,12 +304,14 @@ export async function submitSelfAssessments(
   backdates: Backdates,
 ): Promise<number> {
   let submitted = 0;
+  const remarkRng = rng.fork('remarks');
   for (const surveyType of surveyTypes) {
     const surveyId = cycle.surveyVersions[surveyType];
     if (!surveyId) continue;
     const form = await forms.self(surveyId);
     const rosier: RatingProfile = { quality: Math.min(0.98, profile.quality + 0.1), bias: profile.bias };
     await patchSelfAnswers(acoCtx, cycle.id, surveyType, generateAnswers(form, rosier, rng, { naRate: 0.01, self: true, answerMode: cycle.answerMode }));
+    await patchSelfSectionRemarks(acoCtx, cycle.id, surveyType, generateSectionRemarks(form, remarkRng, { self: true }));
     const dto = await submitSelf(acoCtx, cycle.id, surveyType);
     const submittedAt = momentIn(new Date(cycle.assessmentStart.getTime() + 24 * HOUR), new Date(cycle.assessmentEnd.getTime() - 24 * HOUR), rng);
     backdates.assessments.set(dto.id, { startedAt: new Date(submittedAt.getTime() - 35 * MINUTE), lastSavedAt: new Date(submittedAt.getTime() - MINUTE), submittedAt });

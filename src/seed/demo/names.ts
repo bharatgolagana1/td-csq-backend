@@ -83,3 +83,39 @@ export const SELF_COMMENTS: readonly string[] = [
   'Upgrade planned for the next quarter',
   'Monitoring in place; improvement expected next cycle',
 ];
+
+/** How a customer sums up a survey head before submitting (one remark per section). */
+export const SECTION_REMARKS: Readonly<Record<string, readonly string[]>> = {
+  INFRA: [
+    'Shed space and handling equipment are adequate on most days; the peak season is the pressure point',
+    'Better than last cycle, but the truck dock still gets congested in the evenings',
+    'Cold room and weighing work well; more covered parking for trucks would help',
+  ],
+  SEC: [
+    'Screening is thorough; the morning queue is the main delay',
+    'Security staff are courteous; driver passes could be issued faster',
+    'Procedures are clear and followed consistently',
+  ],
+  PROC: [
+    'Documentation and gate processes are generally smooth',
+    'System downtime meant manual filing a few times this cycle',
+    'Slot booking works when followed; enforcement at the gate is uneven',
+  ],
+  TRADE: [
+    'The helpdesk is responsive; grievance follow-up could be quicker',
+    'Good facilitation overall; the bank counter closes too early for evening shipments',
+    'Communication with the trade has improved this cycle',
+  ],
+};
+
+export const GENERIC_SECTION_REMARKS: readonly string[] = ['Satisfactory overall this cycle', 'Generally good, with room for improvement at peak hours'];
+
+/** The operator's own summary of each head: what it is doing about it. */
+export const SELF_SECTION_REMARKS: Readonly<Record<string, readonly string[]>> = {
+  INFRA: ['Shed expansion and two new forklifts planned for the next quarter', 'Cold chain capacity reviewed; additional racks installed'],
+  SEC: ['Extra screening lane opened in the morning peak', 'Driver passes moved online to cut waiting time'],
+  PROC: ['Terminal system upgrade scheduled to reduce downtime', 'Documentation counter staffed up in peak hours'],
+  TRADE: ['Grievance desk now tracks every complaint to closure', 'Monthly meetings started with forwarders and brokers'],
+};
+
+export const GENERIC_SELF_SECTION_REMARKS: readonly string[] = ['Improvement plan in place for this head'];

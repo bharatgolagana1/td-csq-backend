@@ -21,6 +21,8 @@ import {
   answerKey,
   formQuestionPlaces,
   mergeAnswers,
+  mergeSectionRemarks,
+  missingSectionRemarks,
   ownScore,
   ownScoreByDirection,
   progressOf,
@@ -30,7 +32,7 @@ import {
   type AssessmentForm,
 } from './assessments.form.js';
 import { assessorView, maskEmail, revealsIdentity, type AssessorIdentity } from './assessments.identity.js';
-import { AssessmentModel, type AnswerMode, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer, type StoredSectionRemark, } from './assessments.model.js';
+import { AssessmentModel, type AnswerMode, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer, type StoredSectionRemark } from './assessments.model.js';
 import type {
   AnswerDto,
   AssessmentDetailDto,
@@ -41,7 +43,10 @@ import type {
   ExportQuery,
   HistoryRowDto,
   PatchAnswersResult,
+  PatchSectionRemarksResult,
   ReadinessDto,
+  SectionRemarkDto,
+  SectionRemarkInput,
   SelfAssessmentDto,
 } from './assessments.schemas.js';
 import { customerForm, customerRef, cycleRef, participantRef, selfForm, type CycleRef } from './assessments.sources.js';
@@ -65,6 +70,24 @@ function toAnswerDto(answer: StoredAnswer): AnswerDto {
     comment: answer.comment,
     followUp: [...answer.followUp],
   };
+}
+
+/** A document written before section remarks existed has none. */
+function sectionRemarksOf(doc: Pick<AssessmentDoc, 'sectionRemarks'>): StoredSectionRemark[] {
+  return doc.sectionRemarks ?? [];
+}
+
+function toSectionRemarkDto(entry: StoredSectionRemark): SectionRemarkDto {
+  return { categoryId: entry.categoryId, remark: entry.remark };
+}
+
+/** The saved remarks in form order. */
+function sectionRemarksInFormOrder(form: AssessmentForm, doc: AssessmentDoc): SectionRemarkDto[] {
+  const byCategory = new Map(sectionRemarksOf(doc).map((entry) => [entry.categoryId, entry.remark]));
+  return form.categories.flatMap((category) => {
+    const remark = byCategory.get(category.id);
+    return remark ? [{ categoryId: category.id, remark }] : [];
+  });
 }
 
 export function toAssessmentDto(doc: AssessmentDoc): AssessmentDto {
@@ -105,6 +128,13 @@ function pinnedSurveyId(cycle: CycleRef, surveyType: SurveyType): string {
   const surveyId = cycle.surveyVersions[surveyType];
   if (!surveyId) throw new AppError('PRECONDITION_FAILED', `Cycle ${cycle.code} has no published ${surveyType} survey`, { surveyType });
   return surveyId;
+}
+
+/** What is left before the assessment can be submitted: unanswered slots and sections without a remark. */
+function readinessView(form: AssessmentForm, doc: AssessmentDoc): ReadinessDto {
+  const answers = readinessOf(form, doc.answers, answerModeOf(doc));
+  const remarks = missingSectionRemarks(form, sectionRemarksOf(doc));
+  return { ...answers, missingSectionRemarks: remarks, complete: answers.complete && remarks.length === 0 };
 }
 
 /** The surveys' form unchanged, with the assessment and its progress against that form. */
@@ -170,6 +200,7 @@ export async function getOrCreateForInvitation(invitation: InvitationForAssessme
         userId: null,
         status: 'DRAFT',
         answers: [],
+        sectionRemarks: [],
         answeredCount: 0,
         questionCount: readinessOf(form, [], cycle.answerMode).total,
         startedAt: new Date(),
@@ -195,7 +226,7 @@ export async function getDraft(assessmentId: string): Promise<DraftDto> {
     id: idString(doc._id),
     status: doc.status,
     answers: doc.answers.map(toAnswerDto),
-    sectionRemarks: (doc.sectionRemarks ?? []).map((item) => ({categoryId: item.categoryId, remark: item.remark, })),
+    sectionRemarks: sectionRemarksOf(doc).map(toSectionRemarkDto),
     progress: progressOf(doc.answeredCount, doc.questionCount),
     lastSavedAt: doc.lastSavedAt?.toISOString() ?? null,
     submittedAt: doc.submittedAt?.toISOString() ?? null,
@@ -225,93 +256,44 @@ export async function patchAnswers(assessmentId: string, answers: readonly Answe
   return { ...progressOf(readiness.answered, readiness.total), lastSavedAt: now.toISOString() };
 }
 
-export async function patchSectionRemarks(
-  assessmentId: string,
-  sectionRemarks: readonly StoredSectionRemark[],
-): Promise<{
-  sectionRemarks: StoredSectionRemark[];
-  lastSavedAt: string;
-}> {
-  const doc = await requireAssessment(assessmentId);
-
-  if (doc.status === 'SUBMITTED') {
-    throw new AppError(
-      'PRECONDITION_FAILED',
-      'Assessment already submitted; remarks are read-only',
-    );
-  }
-
-  const form = await formFor(doc);
-
-  const validCategoryIds = new Set(
-    form.categories.map((category) => category.id),
-  );
-
+/** A remark batch names each category once and only categories of the form (zod has bounded and trimmed the text). */
+function sectionRemarkIssues(form: AssessmentForm, inputs: readonly SectionRemarkInput[]): { path: string; message: string }[] {
+  const onForm = new Set(form.categories.map((category) => category.id));
   const seen = new Set<string>();
-
-  const cleaned = sectionRemarks.map((item) => {
-    const categoryId = item.categoryId.trim();
-    const remark = item.remark.trim();
-
-    if (!validCategoryIds.has(categoryId)) {
-      throw new AppError(
-        'VALIDATION',
-        'Invalid assessment section',
-        { categoryId },
-      );
-    }
-
-    if (seen.has(categoryId)) {
-      throw new AppError(
-        'VALIDATION',
-        'Duplicate section remarks',
-        { categoryId },
-      );
-    }
-
-    if (remark.length > 2000) {
-      throw new AppError(
-        'VALIDATION',
-        'Section remarks cannot exceed 2000 characters',
-        { categoryId },
-      );
-    }
-
-    seen.add(categoryId);
-
-    return { categoryId, remark };
+  return inputs.flatMap((input, index) => {
+    const path = `sectionRemarks.${index}.categoryId`;
+    if (!onForm.has(input.categoryId)) return [{ path, message: `category ${input.categoryId} is not on this form` }];
+    if (seen.has(input.categoryId)) return [{ path, message: `category ${input.categoryId} appears twice in this batch` }];
+    seen.add(input.categoryId);
+    return [];
   });
-
-  const now = new Date();
-
-  const updated = await AssessmentModel.findOneAndUpdate(
-    { _id: doc._id, status: 'DRAFT' },
-    {
-      $set: {
-        sectionRemarks: cleaned,
-        lastSavedAt: now,
-      },
-    },
-    { new: true },
-  ).lean<AssessmentDoc | null>();
-
-  if (!updated) {
-    throw new AppError(
-      'PRECONDITION_FAILED',
-      'Assessment already submitted; remarks are read-only',
-    );
-  }
-
-  return {
-    sectionRemarks: updated.sectionRemarks ?? [],
-    lastSavedAt: now.toISOString(),
-  };
 }
 
+/**
+ * Autosave of the section remarks, apart from the answers: merges by
+ * category (an empty remark clears the section's) and returns every saved
+ * remark. 412 once submitted.
+ */
+export async function patchSectionRemarks(assessmentId: string, sectionRemarks: readonly SectionRemarkInput[]): Promise<PatchSectionRemarksResult> {
+  const doc = await requireAssessment(assessmentId);
+  if (doc.status === 'SUBMITTED') throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted; remarks are read-only');
+  const issues = sectionRemarkIssues(await formFor(doc), sectionRemarks);
+  if (issues.length > 0) throw new AppError('VALIDATION', 'Invalid section remarks', { issues });
+
+  const merged = mergeSectionRemarks(sectionRemarksOf(doc), sectionRemarks);
+  const now = new Date();
+  const updated = await AssessmentModel.findOneAndUpdate(
+    { _id: doc._id, status: 'DRAFT' },
+    { $set: { sectionRemarks: merged, lastSavedAt: now } },
+    { new: true },
+  ).lean<AssessmentDoc | null>();
+  if (!updated) throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted; remarks are read-only');
+  return { sectionRemarks: sectionRemarksOf(updated).map(toSectionRemarkDto), lastSavedAt: now.toISOString() };
+}
 
 export async function readiness(assessmentId: string): Promise<ReadinessDto> {
   const doc = await requireAssessment(assessmentId);
-  return readinessOf(await formFor(doc), doc.answers, answerModeOf(doc));
+  return readinessView(await formFor(doc), doc);
 }
 
 function isLinkSession(actor: RequestContext | LinkSession): actor is LinkSession {
@@ -332,45 +314,22 @@ function assertActorMayAccess(actor: RequestContext | LinkSession, doc: Assessme
 }
 
 /**
- * Locks the assessment: 412 unless every form question is answered; sets
- * SUBMITTED + submittedAt; emits `assessment.submitted` inside the same
- * transaction (invitations and cycles react; a failing listener rolls the
- * submit back); audits `assessment.submitted`.
+ * Locks the assessment: 412 unless every form question is answered and every
+ * section has a remark (the details list both, `missing` and
+ * `missingSectionRemarks`); sets SUBMITTED + submittedAt; emits
+ * `assessment.submitted` inside the same transaction (invitations and cycles
+ * react; a failing listener rolls the submit back); audits
+ * `assessment.submitted`.
  */
 export async function submit(actor: RequestContext | LinkSession, assessmentId: string): Promise<AssessmentDto> {
   const doc = await requireAssessment(assessmentId);
   assertActorMayAccess(actor, doc);
   if (doc.status === 'SUBMITTED') throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted');
-  const form = await formFor(doc);
-  const ready = readinessOf(form, doc.answers, answerModeOf(doc));
+  const ready = readinessView(await formFor(doc), doc);
   if (!ready.complete) {
-    throw new AppError('PRECONDITION_FAILED', `Answer every question before submitting (${ready.missing.length} left)`, { missing: ready.missing });
-  }
-
-  // NEW: Every assessment category must have non-empty Remarks.
-  const savedSectionRemarks = new Map(
-    (doc.sectionRemarks ?? []).map((item) => [
-      item.categoryId,
-      item.remark,
-    ]),
-  );
-
-  const missingSectionRemarks = form.categories
-    .filter((category) => {
-      const remark = savedSectionRemarks.get(category.id);
-      return !remark || remark.trim().length === 0;
-    })
-    .map((category) => ({
-      categoryId: category.id,
-      categoryName: category.name,
-    }));
-
-  if (missingSectionRemarks.length > 0) {
-    throw new AppError(
-      'PRECONDITION_FAILED',
-      'Please enter Remarks for every assessment section before submitting.',
-      { missingSectionRemarks },
-    );
+    const details = { missing: ready.missing, missingSectionRemarks: ready.missingSectionRemarks };
+    if (ready.missing.length > 0) throw new AppError('PRECONDITION_FAILED', `Answer every question before submitting (${ready.missing.length} left)`, details);
+    throw new AppError('PRECONDITION_FAILED', `Add a remark to every section before submitting (${ready.missingSectionRemarks.length} left)`, details);
   }
 
   const ctx: AnyContext = isLinkSession(actor)
@@ -457,6 +416,7 @@ async function getOrCreateSelfDoc(ctx: RequestContext, cycleId: string, surveyTy
         userId: toId(ctx.user.id),
         status: 'DRAFT',
         answers: [],
+        sectionRemarks: [],
         answeredCount: 0,
         questionCount: readinessOf(form, [], cycle.answerMode).total,
         startedAt: new Date(),
@@ -474,10 +434,11 @@ export async function getOrCreateSelf(ctx: RequestContext, cycleId: string, surv
   return toAssessmentDto(await getOrCreateSelfDoc(ctx, cycleId, surveyType));
 }
 
-/** `GET /assessments/self/:cycleId/:surveyType`: form, progress and the saved answers. */
+/** `GET /assessments/self/:cycleId/:surveyType`: form, progress, the saved answers and section remarks. */
 export async function getSelfAssessment(ctx: RequestContext, cycleId: string, surveyType: SurveyType): Promise<SelfAssessmentDto> {
   const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
-  return { ...formView(doc, await selfForm(doc.surveyId)), answers: doc.answers.map(toAnswerDto) };
+  const form = await selfForm(doc.surveyId);
+  return { ...formView(doc, form), answers: doc.answers.map(toAnswerDto), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
 }
 
 export async function patchSelfAnswers(
@@ -494,14 +455,10 @@ export async function patchSelfSectionRemarks(
   ctx: RequestContext,
   cycleId: string,
   surveyType: SurveyType,
-  sectionRemarks: readonly StoredSectionRemark[],
-) {
+  sectionRemarks: readonly SectionRemarkInput[],
+): Promise<PatchSectionRemarksResult> {
   const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
-
-  return patchSectionRemarks(
-    idString(doc._id),
-    sectionRemarks,
-  );
+  return patchSectionRemarks(idString(doc._id), sectionRemarks);
 }
 
 export async function submitSelf(ctx: RequestContext, cycleId: string, surveyType: SurveyType): Promise<AssessmentDto> {
@@ -669,13 +626,13 @@ function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], a
   });
 }
 
-/** The read-only return: every form question with its answer; identity masked per the setting. */
+/** The read-only return: every form question with its answer, and the section remarks; identity masked per the setting. */
 export async function getAssessment(ctx: RequestContext, id: string): Promise<AssessmentDetailDto> {
   const doc = await requireVisibleAssessment(ctx, id);
   const [row] = await toHistoryRows(ctx, [doc]);
   if (!row) throw new AppError('INTERNAL', 'History row missing');
   const form = await formFor(doc);
-  return { ...row, answerMode: answerModeOf(doc), survey: form.survey, answers: detailAnswers(form, doc.answers, answerModeOf(doc)) };
+  return { ...row, answerMode: answerModeOf(doc), survey: form.survey, answers: detailAnswers(form, doc.answers, answerModeOf(doc)), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
 }
 
 // --- export -----------------------------------------------------------------
@@ -704,6 +661,7 @@ export const EXPORT_COLUMNS = [
   'direction',
   'importScore',
   'exportScore',
+  'sectionRemark',
 ] as const;
 
 export interface CsvExport {
@@ -711,7 +669,7 @@ export interface CsvExport {
   csv: string;
 }
 
-/** One CSV row per assessment and form question (long format), identities masked per the setting; a cycle out of scope is 404. */
+/** One CSV row per assessment and form question (long format; each row carries its category's remark), identities masked per the setting; a cycle out of scope is 404. */
 export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQuery): Promise<CsvExport> {
   const cycle = await cycleRef(ctx, query.cycleId);
   const requested: FilterQuery<AssessmentDoc> = { cycleId: toId(query.cycleId) };
@@ -732,6 +690,7 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
       form = await formFor(doc);
       forms.set(formKey, form);
     }
+    const remarks = new Map(sectionRemarksOf(doc).map((entry) => [entry.categoryId, entry.remark]));
     for (const line of detailAnswers(form, doc.answers, answerModeOf(doc))) {
       data.push([
         row.id,
@@ -757,6 +716,7 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
         line.direction ?? null,
         row.importScore,
         row.exportScore,
+        remarks.get(line.category.id) ?? null,
       ]);
     }
   }

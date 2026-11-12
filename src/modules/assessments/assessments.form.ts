@@ -9,7 +9,7 @@
 // its subcategories, each by `order`.
 import type { SurveyType } from '../../core/events.js';
 
-import { RATINGS, type AnswerDirection, type AnswerMode, type CustomerType, type Rating, type StoredAnswer } from './assessments.model.js';
+import { RATINGS, type AnswerDirection, type AnswerMode, type CustomerType, type Rating, type StoredAnswer, type StoredSectionRemark } from './assessments.model.js';
 
 export const COMMENT_MODES = ['OPTIONAL', 'REQUIRED', 'REQUIRED_ON_LOW', 'NONE'] as const;
 export type CommentMode = (typeof COMMENT_MODES)[number];
@@ -384,6 +384,25 @@ export function readinessOf(form: AssessmentForm, answers: readonly StoredAnswer
   const slots = formQuestions(form).flatMap((question) => directions.map((direction) => answerKey({ questionId: question.id, direction })));
   const missing = slots.filter((slot) => !answered.has(slot));
   return { answered: slots.length - missing.length, total: slots.length, missing, complete: missing.length === 0 };
+}
+
+// --- section remarks --------------------------------------------------------
+
+/** Merge by section: an incoming remark replaces the stored one of its category, an empty one (after trimming) clears it; the rest stay. */
+export function mergeSectionRemarks(existing: readonly StoredSectionRemark[], incoming: readonly StoredSectionRemark[]): StoredSectionRemark[] {
+  const merged = new Map(existing.map((entry) => [entry.categoryId, entry.remark]));
+  for (const entry of incoming) {
+    const remark = entry.remark.trim();
+    if (remark === '') merged.delete(entry.categoryId);
+    else merged.set(entry.categoryId, remark);
+  }
+  return [...merged].map(([categoryId, remark]) => ({ categoryId, remark }));
+}
+
+/** Every section of the form needs a remark before submitting: the categories still without one, in form order. */
+export function missingSectionRemarks(form: AssessmentForm, remarks: readonly StoredSectionRemark[]): string[] {
+  const remarked = new Set(remarks.filter((entry) => entry.remark.trim() !== '').map((entry) => entry.categoryId));
+  return form.categories.filter((category) => !remarked.has(category.id)).map((category) => category.id);
 }
 
 export interface Progress {
