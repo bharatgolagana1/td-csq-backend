@@ -21,6 +21,12 @@ export type ScoreLevel = 'QUESTION' | 'SUBCATEGORY' | 'CATEGORY' | 'OVERALL';
 
 export type SuppressionReason = 'INSUFFICIENT_RESPONSES';
 
+/** How an assessment was answered: once per question, or once for import and once for export cargo. */
+export type AnswerMode = 'SINGLE' | 'IMPORT_EXPORT';
+
+/** Which answers a set of figures is computed from: a SINGLE cycle's, or one direction of an IMPORT_EXPORT cycle. */
+export type ScoreDirection = 'SINGLE' | 'IMPORT' | 'EXPORT';
+
 /** `refId` of the OVERALL row; the other levels use the survey node id. */
 export const OVERALL_REF_ID = 'OVERALL';
 
@@ -63,6 +69,8 @@ export interface SurveyStructure {
 
 export interface AssessmentAnswer {
   questionId: string;
+  /** Set on the answers of an IMPORT_EXPORT assessment. */
+  direction?: 'IMPORT' | 'EXPORT';
   /** `null` when NA or unanswered. */
   rating: Rating | null;
   na: boolean;
@@ -74,6 +82,8 @@ export interface SubmittedAssessment {
   kind: AssessmentKind;
   /** Set on CUSTOMER assessments; drives the FF / CB split. */
   customerType?: CustomerType;
+  /** Absent means SINGLE. */
+  answerMode?: AnswerMode;
   answers: readonly AssessmentAnswer[];
 }
 

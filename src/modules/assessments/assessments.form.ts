@@ -9,7 +9,7 @@
 // its subcategories, each by `order`.
 import type { SurveyType } from '../../core/events.js';
 
-import { RATINGS, type CustomerType, type Rating, type StoredAnswer } from './assessments.model.js';
+import { RATINGS, type AnswerDirection, type AnswerMode, type CustomerType, type Rating, type StoredAnswer } from './assessments.model.js';
 
 export const COMMENT_MODES = ['OPTIONAL', 'REQUIRED', 'REQUIRED_ON_LOW', 'NONE'] as const;
 export type CommentMode = (typeof COMMENT_MODES)[number];
@@ -234,9 +234,11 @@ export function formQuestionPlaces(form: AssessmentForm): FormQuestionPlace[] {
 
 // --- answers ----------------------------------------------------------------
 
-/** One entry of a merge PATCH; it replaces the stored answer for its question. */
+/** One entry of a merge PATCH; it replaces the stored answer for its question (and direction). */
 export interface AnswerInput {
   questionId: string;
+  /** Required on an IMPORT_EXPORT assessment, refused on a SINGLE one. */
+  direction?: AnswerDirection | undefined;
   rating?: number | null | undefined;
   na?: boolean | undefined;
   comment?: string | null | undefined;
@@ -249,6 +251,16 @@ export interface AnswerIssue {
 }
 
 export type AnswerValidation = { ok: true; answers: StoredAnswer[] } | { ok: false; issues: AnswerIssue[] };
+
+/** The directions each question is answered in: once (no direction) on a SINGLE assessment, IMPORT and EXPORT otherwise. */
+export function answerDirections(answerMode: AnswerMode): readonly (AnswerDirection | null)[] {
+  return answerMode === 'IMPORT_EXPORT' ? ['IMPORT', 'EXPORT'] : [null];
+}
+
+/** An answer's slot on the form: the question id, suffixed `:IMPORT` / `:EXPORT` on an IMPORT_EXPORT assessment. */
+export function answerKey(answer: { questionId: string; direction?: AnswerDirection | null | undefined }): string {
+  return answer.direction ? `${answer.questionId}:${answer.direction}` : answer.questionId;
+}
 
 export function isLowRating(rating: Rating | null): boolean {
   return rating !== null && rating <= LOW_RATING_MAX;
@@ -297,16 +309,18 @@ function validateOne(question: FormQuestion, input: AnswerInput, path: string): 
   }
 
   if (issues.length > 0) return { issues };
-  return { answer: { questionId: question.id, rating, na, comment, followUp: [...followUp] } };
+  return { answer: { questionId: question.id, ...(input.direction ? { direction: input.direction } : {}), rating, na, comment, followUp: [...followUp] } };
 }
 
 /**
  * Validates a batch of answers against the form (§7 "Form rules"): the
  * question must be on the form, exactly one of rating / NA, a comment where
  * the comment mode demands it (and none where it forbids it), follow-up
- * options only on Fair / Poor and only from the question's list.
+ * options only on Fair / Poor and only from the question's list. An
+ * IMPORT_EXPORT assessment needs the direction on every answer; a SINGLE one
+ * takes none.
  */
-export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInput[]): AnswerValidation {
+export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInput[], answerMode: AnswerMode = 'SINGLE'): AnswerValidation {
   const byId = new Map(formQuestions(form).map((question) => [question.id, question]));
   const issues: AnswerIssue[] = [];
   const answers: StoredAnswer[] = [];
@@ -318,11 +332,21 @@ export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInp
       issues.push({ path: `${path}.questionId`, message: `question ${input.questionId} is not on this form` });
       return;
     }
-    if (seen.has(input.questionId)) {
-      issues.push({ path: `${path}.questionId`, message: `question ${input.questionId} appears twice in this batch` });
+    if (answerMode === 'IMPORT_EXPORT' && !input.direction) {
+      issues.push({ path: `${path}.direction`, message: 'Import or Export direction is required' });
       return;
     }
-    seen.add(input.questionId);
+    if (answerMode === 'SINGLE' && input.direction) {
+      issues.push({ path: `${path}.direction`, message: 'Direction is not allowed for a single-answer assessment' });
+      return;
+    }
+    const key = answerKey(input);
+    if (seen.has(key)) {
+      const which = input.direction ? ` (${input.direction})` : '';
+      issues.push({ path: `${path}.questionId`, message: `question ${input.questionId}${which} appears twice in this batch` });
+      return;
+    }
+    seen.add(key);
     const result = validateOne(question, input, path);
     if ('issues' in result) issues.push(...result.issues);
     else answers.push(result.answer);
@@ -330,10 +354,10 @@ export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInp
   return issues.length > 0 ? { ok: false, issues } : { ok: true, answers };
 }
 
-/** Merge by question: an incoming answer replaces the stored one for the same question; the rest stay. */
+/** Merge by question (and direction): an incoming answer replaces the stored one in the same slot; the rest stay. */
 export function mergeAnswers(existing: readonly StoredAnswer[], incoming: readonly StoredAnswer[]): StoredAnswer[] {
-  const merged = new Map(existing.map((answer) => [answer.questionId, answer]));
-  for (const answer of incoming) merged.set(answer.questionId, answer);
+  const merged = new Map(existing.map((answer) => [answerKey(answer), answer]));
+  for (const answer of incoming) merged.set(answerKey(answer), answer);
   return [...merged.values()];
 }
 
@@ -344,17 +368,22 @@ export function isAnswered(answer: StoredAnswer): boolean {
 export interface Readiness {
   answered: number;
   total: number;
-  /** Question ids still unanswered, in form order. */
+  /** Slots still unanswered, in form order (`answerKey`: the question id, with `:IMPORT` / `:EXPORT` on an IMPORT_EXPORT assessment). */
   missing: string[];
   complete: boolean;
 }
 
-/** Progress against the form: every active question must be answered (rating or NA). */
-export function readinessOf(form: AssessmentForm, answers: readonly StoredAnswer[]): Readiness {
-  const answered = new Set(answers.filter(isAnswered).map((answer) => answer.questionId));
-  const questions = formQuestions(form);
-  const missing = questions.filter((question) => !answered.has(question.id)).map((question) => question.id);
-  return { answered: questions.length - missing.length, total: questions.length, missing, complete: missing.length === 0 };
+/**
+ * Progress against the form: every active question must be answered (rating
+ * or NA) — on an IMPORT_EXPORT assessment once per direction, so `total` is
+ * twice the questions.
+ */
+export function readinessOf(form: AssessmentForm, answers: readonly StoredAnswer[], answerMode: AnswerMode = 'SINGLE'): Readiness {
+  const answered = new Set(answers.filter(isAnswered).map(answerKey));
+  const directions = answerDirections(answerMode);
+  const slots = formQuestions(form).flatMap((question) => directions.map((direction) => answerKey({ questionId: question.id, direction })));
+  const missing = slots.filter((slot) => !answered.has(slot));
+  return { answered: slots.length - missing.length, total: slots.length, missing, complete: missing.length === 0 };
 }
 
 export interface Progress {
@@ -374,4 +403,9 @@ export function ownScore(answers: readonly StoredAnswer[]): number | null {
   if (ratings.length === 0) return null;
   const mean = ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length;
   return Number(`${Math.round(Number(`${mean}e1`))}e-1`);
+}
+
+/** `ownScore` over one direction of an IMPORT_EXPORT assessment. */
+export function ownScoreByDirection(answers: readonly StoredAnswer[], direction: AnswerDirection): number | null {
+  return ownScore(answers.filter((answer) => answer.direction === direction));
 }

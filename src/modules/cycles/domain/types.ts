@@ -9,6 +9,10 @@ export const SURVEY_TYPES: readonly SurveyType[] = ['DOMESTIC', 'INTERNATIONAL']
 export type CycleType = SurveyType | 'BOTH';
 export const CYCLE_TYPES: readonly CycleType[] = ['DOMESTIC', 'INTERNATIONAL', 'BOTH'];
 
+/** How the cycle's assessors answer: one rating per question, or one for import and one for export cargo. */
+export type AnswerMode = 'SINGLE' | 'IMPORT_EXPORT';
+export const ANSWER_MODES: readonly AnswerMode[] = ['SINGLE', 'IMPORT_EXPORT'];
+
 export type CycleStatus =
   | 'DRAFT'
   | 'PUBLISHED'

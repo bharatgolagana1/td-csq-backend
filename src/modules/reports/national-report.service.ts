@@ -5,7 +5,7 @@
 import type { RequestContext } from '../../core/auth/session.js';
 
 import { averageOf, cycleSummaryOf, indexRows, percentage, round2, rowAt } from './reports.figures.js';
-import type { NationalReportDto, NationalReportQuery, SurveyType } from './reports.schemas.js';
+import type { NationalReportDto, NationalReportQuery, ReportDirection, SurveyType } from './reports.schemas.js';
 import { selectNationalCycle } from './reports.selection.js';
 import {
   loadAirports,
@@ -28,9 +28,14 @@ function byRank<T extends { rank: number | null }>(name: (row: T) => string): (a
 }
 
 /** Every airport in the national table or with a participant; the latter without figures until scored. */
-async function airportsRanked(cycle: CycleView, surveyType: SurveyType, participants: readonly ParticipantView[]): Promise<NationalReportDto['airports']> {
+async function airportsRanked(
+  cycle: CycleView,
+  surveyType: SurveyType,
+  direction: ReportDirection,
+  participants: readonly ParticipantView[],
+): Promise<NationalReportDto['airports']> {
   const participating = [...new Set(participants.map((participant) => participant.airportId))];
-  const [ranked, airports] = await Promise.all([loadNationalTable(cycle.id, surveyType), loadAirports(participating)]);
+  const [ranked, airports] = await Promise.all([loadNationalTable(cycle.id, surveyType, direction), loadAirports(participating)]);
   const rankedById = new Map(ranked.map((row) => [row.airportId, row]));
   const rankOf = ranked[0]?.rankOf ?? 0;
   const airportIds = [...new Set([...ranked.map((row) => row.airportId), ...participating])];
@@ -53,16 +58,16 @@ async function airportsRanked(cycle: CycleView, surveyType: SurveyType, particip
 }
 
 export async function nationalReport(ctx: RequestContext, query: NationalReportQuery): Promise<NationalReportDto> {
-  const { cycle, surveyType, provisional } = await selectNationalCycle(ctx, query);
+  const { cycle, surveyType, direction, provisional } = await selectNationalCycle(ctx, query);
   const participants = await loadParticipants(cycle.id);
   const typed = participants.filter((participant) => participant.surveyTypes.includes(surveyType));
   const surveyId = cycle.surveyVersions[surveyType];
 
   const [airports, operators, operatorAirports, scores, tree] = await Promise.all([
-    airportsRanked(cycle, surveyType, participants),
+    airportsRanked(cycle, surveyType, direction, participants),
     loadOperators(typed.map((participant) => participant.acoId)),
     loadAirports(typed.map((participant) => participant.airportId)),
-    Promise.all(typed.map((participant) => loadScores(cycle.id, participant.acoId, surveyType))),
+    Promise.all(typed.map((participant) => loadScores(cycle.id, participant.acoId, surveyType, direction))),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
   ]);
   const indexed: Map<string, ScoreRowView>[] = scores.map((set) => indexRows(set.rows));
@@ -94,6 +99,7 @@ export async function nationalReport(ctx: RequestContext, query: NationalReportQ
   return {
     cycle: cycleSummaryOf(cycle),
     surveyType,
+    direction,
     provisional,
     airports,
     operators: operatorRows,

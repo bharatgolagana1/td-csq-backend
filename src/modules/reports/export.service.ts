@@ -1,6 +1,7 @@
 // `GET /reports/export?scope=`: the operator, airport or national report as
 // CSV. The route is open to any signed-in user; the task of the chosen scope
 // is asserted here, so the same confidentiality rules as the JSON reports apply.
+// The file name carries the direction of an IMPORT_EXPORT cycle's report.
 import { assertTask } from '../../core/auth/rbac.js';
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
@@ -10,7 +11,7 @@ import { nationalReport } from './national-report.service.js';
 import { operatorQuestions, operatorReport } from './operator-report.service.js';
 import { csvFileName, toCsv, type CsvCell } from './reports.csv.js';
 import { round2 } from './reports.figures.js';
-import type { ExportQuery } from './reports.schemas.js';
+import type { ExportQuery, ReportDirection } from './reports.schemas.js';
 
 export interface CsvExport {
   fileName: string;
@@ -23,6 +24,11 @@ const AIRPORT_COLUMNS = ['level', 'code', 'name', 'mean', 'share_pct', 'covered_
 const NATIONAL_COLUMNS = ['section', 'code', 'name', 'airport', 'rating', 'n', 'rank', 'rank_of', 'suppressed'] as const;
 
 type Row = Record<string, CsvCell>;
+
+/** `import` / `export` at the end of the file name; nothing for a SINGLE report. */
+function directionPart(direction: ReportDirection): string[] {
+  return direction === 'SINGLE' ? [] : [direction.toLowerCase()];
+}
 
 function requireId(value: string | undefined, name: string): string {
   if (value === undefined) throw new AppError('VALIDATION', `Query parameter "${name}" is required for this scope`, { in: 'query', name });
@@ -55,7 +61,7 @@ async function operatorCsv(ctx: RequestContext, query: ExportQuery): Promise<Csv
   }
   for (const question of questions.questions) rows.push({ ...figuresRow('QUESTION', { ...question, name: question.text }), comments: question.comments });
   return {
-    fileName: csvFileName('operator', report.operator.code, report.cycle.code, report.surveyType),
+    fileName: csvFileName('operator', report.operator.code, report.cycle.code, report.surveyType, ...directionPart(report.direction)),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(OPERATOR_COLUMNS, rows),
   };
@@ -122,7 +128,7 @@ async function airportCsv(ctx: RequestContext, query: ExportQuery): Promise<CsvE
     })),
   ];
   return {
-    fileName: csvFileName('airport', report.airport.iata, report.cycle.code, report.surveyType),
+    fileName: csvFileName('airport', report.airport.iata, report.cycle.code, report.surveyType, ...directionPart(report.direction)),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(AIRPORT_COLUMNS, rows),
   };
@@ -167,7 +173,7 @@ async function nationalCsv(ctx: RequestContext, query: ExportQuery): Promise<Csv
     })),
   ];
   return {
-    fileName: csvFileName('national', report.cycle.code, report.surveyType),
+    fileName: csvFileName('national', report.cycle.code, report.surveyType, ...directionPart(report.direction)),
     contentType: 'text/csv; charset=utf-8',
     csv: toCsv(NATIONAL_COLUMNS, rows),
   };

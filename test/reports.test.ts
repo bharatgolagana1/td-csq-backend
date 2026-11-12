@@ -209,6 +209,7 @@ const DISTRIBUTION_A: ScoreSetView['distribution'] = [
 function cycle(id: string, patch: Partial<CycleView> & Pick<CycleView, 'code' | 'name' | 'type' | 'status'>): CycleView {
   return {
     id,
+    answerMode: 'SINGLE',
     assessment: { start: new Date('2026-03-01T00:00:00Z'), end: new Date('2026-03-31T23:59:00Z') },
     scoredAt: null,
     createdAt: new Date('2026-02-01T00:00:00Z'),
@@ -381,6 +382,7 @@ describe('GET /reports/operator/:acoId', () => {
         'categories',
         'comparison',
         'cycle',
+        'direction',
         'feedbackDistribution',
         'nationalTable',
         'operator',
@@ -389,11 +391,13 @@ describe('GET /reports/operator/:acoId', () => {
         'surveyType',
       ].sort(),
     );
+    expect(report.direction).toBe('SINGLE');
     expect(report.cycle).toEqual({
       id: CYCLE.scored,
       code: 'CSQ-2026-1',
       name: 'Cycle 2026 H1',
       type: 'BOTH',
+      answerMode: 'SINGLE',
       status: 'SCORED',
       assessment: { start: '2026-03-01T00:00:00.000Z', end: '2026-03-31T23:59:00.000Z' },
       scoredAt: '2026-04-01T00:00:00.000Z',

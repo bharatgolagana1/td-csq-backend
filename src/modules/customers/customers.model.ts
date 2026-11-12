@@ -27,6 +27,8 @@ export interface CustomerDoc {
   lastSampledCycleId: Types.ObjectId | null;
   /** The `customer_imports` row that created or last updated this customer. */
   importBatchId: Types.ObjectId | null;
+  /** Set by DELETE; a deleted customer is out of the directory but keeps its history. Absent on older documents. */
+  deletedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,6 +47,7 @@ const schema = new Schema<CustomerDoc>(
     tags: { type: [String], required: true, default: () => [] },
     lastSampledCycleId: { type: Schema.Types.ObjectId, ref: 'Cycle', default: null },
     importBatchId: { type: Schema.Types.ObjectId, ref: 'CustomerImport', default: null },
+    deletedAt: { type: Date, default: null },
   },
   { timestamps: true, collection: 'customers' },
 );
