@@ -15,7 +15,6 @@ import { audit } from '../audit/audit.service.js';
 import { findUserById } from '../identity/users.service.js';
 import { findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { getSettingsDoc } from '../settings/settings.service.js';
-import { InvitationModel } from '../invitations/invitations.model.js';
 
 import {
   formQuestionPlaces,
@@ -429,161 +428,48 @@ async function cycleSummaries(ctx: RequestContext, docs: readonly AssessmentDoc[
   return new Map(refs.map((ref) => [ref.id, ref]));
 }
 
-
-async function assessorIdentity(
-  doc: AssessmentDoc,
-): Promise<AssessorIdentity> {
-  // SELF assessments: existing behaviour
+async function assessorIdentity(doc: AssessmentDoc): Promise<AssessorIdentity> {
   if (doc.kind === 'SELF') {
-    const user = doc.userId
-      ? await findUserById(doc.userId)
-      : null;
-
-    return {
-      name: user?.name ?? null,
-      email: user?.email ?? null,
-    };
+    const user = doc.userId ? await findUserById(doc.userId) : null;
+    return { name: user?.name ?? null, email: user?.email ?? null };
   }
-
-  // CUSTOMER assessments: first check the customers collection
-  const customer = doc.customerId
-    ? await customerRef(
-        idString(doc.acoId),
-        idString(doc.customerId),
-      )
-    : null;
-
-  // Historical fallback: find the matching invitation
-  const invitation =
-    !customer && doc.invitationId
-      ? await InvitationModel.findOne({
-          _id: doc.invitationId,
-          assessmentId: doc._id,
-          cycleId: doc.cycleId,
-          acoId: doc.acoId,
-          customerId: doc.customerId,
-        })
-          .select('customer email')
-          .lean()
-      : null;
-
-  return {
-    name:
-      customer?.contactPerson ??
-      customer?.name ??
-      invitation?.customer?.contactPerson ??
-      invitation?.customer?.name ??
-      null,
-
-    email:
-      customer?.email ??
-      invitation?.email ??
-      null,
-  };
+  const customer = doc.customerId ? await customerRef(idString(doc.acoId), idString(doc.customerId)) : null;
+  return { name: customer?.contactPerson ?? customer?.name ?? null, email: customer?.email ?? null };
 }
 
-
-async function toHistoryRows(
-  ctx: RequestContext,
-  docs: readonly AssessmentDoc[],
-): Promise<HistoryRowDto[]> {
-  // Keep the existing Privacy setting.
-  // Platform users always see customer identity.
-  const settings = await getSettingsDoc();
-
-  const reveal =
-    ctx.scope.kind === 'PLATFORM' ||
-    revealsIdentity(ctx, settings);
-
-  const MASK = '********';
-
+async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]): Promise<HistoryRowDto[]> {
+  const reveal = revealsIdentity(ctx, await getSettingsDoc());
   const [cycles, operators, identities] = await Promise.all([
     cycleSummaries(ctx, docs),
     findOrganisationsByIds(docs.map((doc) => doc.acoId)),
     Promise.all(docs.map(assessorIdentity)),
   ]);
-
   return docs.map((doc, index) => {
     const id = idString(doc._id);
     const acoId = idString(doc.acoId);
-
     const operator = operators.get(acoId);
-
-    const identity = identities[index] ?? {
-      name: null,
-      email: null,
-    };
-
-    // Hide only CUSTOMER identities when privacy is OFF.
-    const hideCustomerIdentity =
-      doc.kind === 'CUSTOMER' && !reveal;
-
-    const revealed =
-      doc.kind === 'SELF' || reveal;
-
-    // Do not return the real name/email when hidden.
-    const assessor = hideCustomerIdentity
-      ? {
-          name: MASK,
-          email: MASK,
-          revealed: false,
-        }
-      : assessorView(identity, revealed);
-
+    const identity = identities[index] ?? { name: null, email: null };
+    const revealed = doc.kind === 'SELF' || reveal;
+    const assessor = assessorView(identity, revealed);
     return {
       id,
-
-      cycle:
-        cycles.get(idString(doc.cycleId)) ??
-        UNKNOWN_CYCLE(idString(doc.cycleId)),
-
-      operator: {
-        id: acoId,
-        code: operator?.code ?? '?',
-        name: operator?.name ?? 'Unknown operator',
-      },
-
+      cycle: cycles.get(idString(doc.cycleId)) ?? UNKNOWN_CYCLE(idString(doc.cycleId)),
+      operator: { id: acoId, code: operator?.code ?? '?', name: operator?.name ?? 'Unknown operator' },
       kind: doc.kind,
       surveyType: doc.surveyType,
       customerType: doc.customerType,
-
-      customerId:
-        hideCustomerIdentity || !revealed || !doc.customerId
-          ? null
-          : idString(doc.customerId),
-
-      assessorName: hideCustomerIdentity
-        ? MASK
-        : assessor.name,
-
-      assessorEmailMasked: hideCustomerIdentity
-        ? MASK
-        : doc.kind === 'CUSTOMER' && reveal
-          ? identity.email
-          : identity.email == null
-            ? null
-            : maskEmail(identity.email),
-
+      customerId: revealed && doc.customerId ? idString(doc.customerId) : null,
+      assessorName: assessor.name,
+      assessorEmailMasked: revealed && identity.email !== null ? maskEmail(identity.email) : null,
       assessor,
-
       status: doc.status,
-
-      progress: progressOf(
-        doc.answeredCount,
-        doc.questionCount,
-      ),
-
+      progress: progressOf(doc.answeredCount, doc.questionCount),
       startedAt: doc.startedAt.toISOString(),
-
-      submittedAt:
-        doc.submittedAt?.toISOString() ?? null,
-
-      // Keep existing scoring behaviour.
+      submittedAt: doc.submittedAt?.toISOString() ?? null,
       score: ownScore(doc.answers),
     };
   });
 }
-
 
 const SORTABLE = ['startedAt', 'submittedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
 

@@ -287,7 +287,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 
 ### assessments (signed-in)
 - `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType`) → history grid rows `{ id, cycle, kind, customerType, assessorName, assessorEmailMasked, status, submittedAt, score }`
-- `GET /assessments/:id` → read-only return (answers with question text); customer identity masked for ACO users unless `settings.revealAssessorIdentity`.
+- `GET /assessments/:id` → read-only return (answers with question text); a customer's identity is hidden from non-platform users unless `settings.revealAssessorIdentity` — `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
 - `GET /assessments/self/:cycleId/:surveyType` `assessments.self` → the ACO's self-assessment (created on first access) · `PATCH …/answers` · `POST …/submit`.
 - `GET /assessments/export?cycleId=` `assessments.view` → CSV.
 
