@@ -20,6 +20,7 @@ import { findRoleByCode } from '../../src/modules/identity/roles.service.js';
 import { UserModel, type UserDoc, type UserStatus } from '../../src/modules/identity/users.model.js';
 import type { OrganisationDoc, OrgType } from '../../src/modules/organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationByCode } from '../../src/modules/organisations/organisations.service.js';
+import { migrateScoreDirections } from '../../src/modules/scoring/scores.migration.js';
 import { seedCore } from '../../src/seed/core.js';
 
 import { createAirportOrg, createTestOperator } from './fixtures.js';
@@ -86,6 +87,7 @@ export interface TestApp {
 async function resetDatabase(): Promise<void> {
   await mongoose.connection.dropDatabase();
   await ensureIndexes();
+  await migrateScoreDirections();
 }
 
 export interface CreateTestAppOptions {

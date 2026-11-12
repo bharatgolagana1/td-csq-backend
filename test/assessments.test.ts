@@ -577,7 +577,7 @@ describe('history, masking, tenancy and export', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.headers['content-disposition']).toContain('assessments-CSQ-2026-1.csv');
     const lines = res.text.trim().split('\n');
-    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp');
+    expect(lines[0]).toBe('assessmentId,cycle,operator,kind,surveyType,customerType,assessorName,assessorEmail,status,submittedAt,score,category,subcategory,questionCode,question,rating,na,comment,followUp,answerMode,direction,importScore,exportScore');
     // Three SUBMITTED assessments: FF customer (4 questions) + SELF (5) of ACO-A, FF customer (4) of ACO-B.
     expect(lines).toHaveLength(1 + 4 + 5 + 4);
     expect(lines.find((line) => line.includes(submittedB) && line.includes('Q.REQ'))).toContain('Dev Patel,dev@bombayfreight.test,SUBMITTED');

@@ -17,9 +17,12 @@ import { findOrganisationsByIds } from '../organisations/organisations.service.j
 import { getSettingsDoc } from '../settings/settings.service.js';
 
 import {
+  answerDirections,
+  answerKey,
   formQuestionPlaces,
   mergeAnswers,
   ownScore,
+  ownScoreByDirection,
   progressOf,
   readinessOf,
   validateAnswers,
@@ -27,7 +30,7 @@ import {
   type AssessmentForm,
 } from './assessments.form.js';
 import { assessorView, maskEmail, revealsIdentity, type AssessorIdentity } from './assessments.identity.js';
-import { AssessmentModel, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer } from './assessments.model.js';
+import { AssessmentModel, type AnswerMode, type AssessmentDoc, type AssessmentKind, type CustomerType, type StoredAnswer } from './assessments.model.js';
 import type {
   AnswerDto,
   AssessmentDetailDto,
@@ -48,8 +51,20 @@ export const SELF_OPEN_STATUSES: readonly CycleStatus[] = ['SAMPLING_OPEN', 'SAM
 
 // --- views ------------------------------------------------------------------
 
+/** An assessment stored before answer modes existed has none: it was answered one rating per question. */
+function answerModeOf(doc: Pick<AssessmentDoc, 'answerMode'>): AnswerMode {
+  return doc.answerMode ?? 'SINGLE';
+}
+
 function toAnswerDto(answer: StoredAnswer): AnswerDto {
-  return { questionId: answer.questionId, rating: answer.rating, na: answer.na, comment: answer.comment, followUp: [...answer.followUp] };
+  return {
+    questionId: answer.questionId,
+    ...(answer.direction ? { direction: answer.direction } : {}),
+    rating: answer.rating,
+    na: answer.na,
+    comment: answer.comment,
+    followUp: [...answer.followUp],
+  };
 }
 
 export function toAssessmentDto(doc: AssessmentDoc): AssessmentDto {
@@ -61,6 +76,7 @@ export function toAssessmentDto(doc: AssessmentDoc): AssessmentDto {
     surveyId: doc.surveyId,
     surveyType: doc.surveyType,
     kind: doc.kind,
+    answerMode: answerModeOf(doc),
     customerType: doc.customerType,
     invitationId: doc.invitationId ? idString(doc.invitationId) : null,
     userId: doc.userId ? idString(doc.userId) : null,
@@ -93,7 +109,7 @@ function pinnedSurveyId(cycle: CycleRef, surveyType: SurveyType): string {
 
 /** The surveys' form unchanged, with the assessment and its progress against that form. */
 function formView(doc: AssessmentDoc, form: AssessmentForm): AssessmentFormDto {
-  const readiness = readinessOf(form, doc.answers);
+  const readiness = readinessOf(form, doc.answers, answerModeOf(doc));
   return { assessment: toAssessmentDto(doc), ...form, progress: progressOf(readiness.answered, readiness.total) };
 }
 
@@ -118,7 +134,8 @@ function invitationIdOf(invitation: InvitationForAssessment): string {
 /**
  * One assessment per invitation, created on first access and returned as-is
  * afterwards. Pins the survey version the cycle published for the survey
- * type and the customer's stakeholder type (FF / CB), which decides the form.
+ * type, the customer's stakeholder type (FF / CB), which decides the form, and
+ * the cycle's answer mode, which decides how often each question is answered.
  */
 export async function getOrCreateForInvitation(invitation: InvitationForAssessment): Promise<AssessmentDto> {
   const invitationId = toId(invitationIdOf(invitation), 'invitationId');
@@ -146,6 +163,7 @@ export async function getOrCreateForInvitation(invitation: InvitationForAssessme
         surveyId,
         surveyType: invitation.surveyType,
         kind: 'CUSTOMER',
+        answerMode: cycle.answerMode,
         customerId: toId(customerId),
         customerType: customer.type,
         invitationId,
@@ -153,7 +171,7 @@ export async function getOrCreateForInvitation(invitation: InvitationForAssessme
         status: 'DRAFT',
         answers: [],
         answeredCount: 0,
-        questionCount: readinessOf(form, []).total,
+        questionCount: readinessOf(form, [], cycle.answerMode).total,
         startedAt: new Date(),
         lastSavedAt: null,
         submittedAt: null,
@@ -191,11 +209,11 @@ export async function patchAnswers(assessmentId: string, answers: readonly Answe
   const doc = await requireAssessment(assessmentId);
   if (doc.status === 'SUBMITTED') throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted; answers are read-only');
   const form = await formFor(doc);
-  const validation = validateAnswers(form, answers);
+  const validation = validateAnswers(form, answers, answerModeOf(doc));
   if (!validation.ok) throw new AppError('VALIDATION', 'Invalid answers', { issues: validation.issues });
 
   const merged = mergeAnswers(doc.answers, validation.answers);
-  const readiness = readinessOf(form, merged);
+  const readiness = readinessOf(form, merged, answerModeOf(doc));
   const now = new Date();
   const updated = await AssessmentModel.findOneAndUpdate(
     { _id: doc._id, status: 'DRAFT' },
@@ -208,7 +226,7 @@ export async function patchAnswers(assessmentId: string, answers: readonly Answe
 
 export async function readiness(assessmentId: string): Promise<ReadinessDto> {
   const doc = await requireAssessment(assessmentId);
-  return readinessOf(await formFor(doc), doc.answers);
+  return readinessOf(await formFor(doc), doc.answers, answerModeOf(doc));
 }
 
 function isLinkSession(actor: RequestContext | LinkSession): actor is LinkSession {
@@ -238,7 +256,7 @@ export async function submit(actor: RequestContext | LinkSession, assessmentId: 
   const doc = await requireAssessment(assessmentId);
   assertActorMayAccess(actor, doc);
   if (doc.status === 'SUBMITTED') throw new AppError('PRECONDITION_FAILED', 'Assessment already submitted');
-  const ready = readinessOf(await formFor(doc), doc.answers);
+  const ready = readinessOf(await formFor(doc), doc.answers, answerModeOf(doc));
   if (!ready.complete) {
     throw new AppError('PRECONDITION_FAILED', `Answer every question before submitting (${ready.missing.length} left)`, { missing: ready.missing });
   }
@@ -318,6 +336,7 @@ async function getOrCreateSelfDoc(ctx: RequestContext, cycleId: string, surveyTy
     {
       $setOnInsert: {
         ...key,
+        answerMode: cycle.answerMode,
         airportId: toId(participant.airportId),
         surveyId,
         customerId: null,
@@ -327,7 +346,7 @@ async function getOrCreateSelfDoc(ctx: RequestContext, cycleId: string, surveyTy
         status: 'DRAFT',
         answers: [],
         answeredCount: 0,
-        questionCount: readinessOf(form, []).total,
+        questionCount: readinessOf(form, [], cycle.answerMode).total,
         startedAt: new Date(),
         lastSavedAt: null,
         submittedAt: null,
@@ -373,9 +392,11 @@ export interface SubmittedAssessmentView {
   acoId: string;
   surveyType: SurveyType;
   kind: AssessmentKind;
+  answerMode: AnswerMode;
   customerId: string | null;
   customerType?: CustomerType;
   submittedAt: string;
+  /** With `direction` on an IMPORT_EXPORT assessment. */
   answers: AnswerDto[];
 }
 
@@ -389,6 +410,7 @@ export async function listSubmitted(cycleId: string, acoId: string, kind?: Asses
     acoId: idString(doc.acoId),
     surveyType: doc.surveyType,
     kind: doc.kind,
+    answerMode: answerModeOf(doc),
     customerId: doc.customerId ? idString(doc.customerId) : null,
     ...(doc.customerType ? { customerType: doc.customerType } : {}),
     submittedAt: doc.submittedAt?.toISOString() ?? doc.updatedAt.toISOString(),
@@ -466,7 +488,9 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       progress: progressOf(doc.answeredCount, doc.questionCount),
       startedAt: doc.startedAt.toISOString(),
       submittedAt: doc.submittedAt?.toISOString() ?? null,
-      score: ownScore(doc.answers),
+      score: answerModeOf(doc) === 'SINGLE' ? ownScore(doc.answers) : null,
+      importScore: answerModeOf(doc) === 'IMPORT_EXPORT' ? ownScoreByDirection(doc.answers, 'IMPORT') : null,
+      exportScore: answerModeOf(doc) === 'IMPORT_EXPORT' ? ownScoreByDirection(doc.answers, 'EXPORT') : null,
     };
   });
 }
@@ -497,12 +521,16 @@ async function requireVisibleAssessment(ctx: RequestContext, id: string): Promis
   return doc;
 }
 
-function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[]): AssessmentDetailDto['answers'] {
-  const byQuestion = new Map(answers.map((answer) => [answer.questionId, answer]));
-  return formQuestionPlaces(form).map(({ question, category, subcategory }) => {
-    const answer = byQuestion.get(question.id);
+/** Every form question with its answer; on an IMPORT_EXPORT assessment each question twice, IMPORT then EXPORT. */
+function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], answerMode: AnswerMode): AssessmentDetailDto['answers'] {
+  const bySlot = new Map(answers.map((answer) => [answerKey(answer), answer]));
+  const directions = answerDirections(answerMode);
+  const places = formQuestionPlaces(form).flatMap((place) => directions.map((direction) => ({ ...place, direction })));
+  return places.map(({ question, category, subcategory, direction }) => {
+    const answer = bySlot.get(answerKey({ questionId: question.id, direction }));
     return {
       questionId: question.id,
+      ...(direction ? { direction } : {}),
       code: question.code,
       text: question.text,
       category: { id: category.id, code: category.code, name: category.name },
@@ -521,7 +549,7 @@ export async function getAssessment(ctx: RequestContext, id: string): Promise<As
   const [row] = await toHistoryRows(ctx, [doc]);
   if (!row) throw new AppError('INTERNAL', 'History row missing');
   const form = await formFor(doc);
-  return { ...row, survey: form.survey, answers: detailAnswers(form, doc.answers) };
+  return { ...row, answerMode: answerModeOf(doc), survey: form.survey, answers: detailAnswers(form, doc.answers, answerModeOf(doc)) };
 }
 
 // --- export -----------------------------------------------------------------
@@ -546,6 +574,10 @@ export const EXPORT_COLUMNS = [
   'na',
   'comment',
   'followUp',
+  'answerMode',
+  'direction',
+  'importScore',
+  'exportScore',
 ] as const;
 
 export interface CsvExport {
@@ -574,7 +606,7 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
       form = await formFor(doc);
       forms.set(formKey, form);
     }
-    for (const line of detailAnswers(form, doc.answers)) {
+    for (const line of detailAnswers(form, doc.answers, answerModeOf(doc))) {
       data.push([
         row.id,
         row.cycle.code,
@@ -595,6 +627,10 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
         line.na,
         line.comment,
         line.followUp.join(' | '),
+        answerModeOf(doc),
+        line.direction ?? null,
+        row.importScore,
+        row.exportScore,
       ]);
     }
   }

@@ -41,7 +41,7 @@ import { publishedSurveyVersions } from './cycles.surveys.js';
 import { deriveWindows } from './domain/derive.js';
 import { cycleSurveyTypes } from './domain/participants.js';
 import { checkManualTransition, statusAfterPublish, TRANSITION_TABLE } from './domain/transitions.js';
-import type { CycleStatus, CycleWindows } from './domain/types.js';
+import type { AnswerMode, CycleStatus, CycleWindows } from './domain/types.js';
 import { validateWindows, windowEdge, type WindowProblem } from './domain/windows.js';
 import {
   createParticipants,
@@ -85,6 +85,11 @@ export function cycleScopeFilter(ctx: AnyContext): FilterQuery<CycleDoc> {
   }
 }
 
+/** A cycle stored before answer modes existed has none: it was answered one rating per question. */
+export function cycleAnswerMode(cycle: Pick<CycleDoc, 'answerMode'>): AnswerMode {
+  return cycle.answerMode ?? 'SINGLE';
+}
+
 export async function findCycleDoc(id: string | Types.ObjectId): Promise<CycleDoc | null> {
   return CycleModel.findById(toId(idString(id), 'cycleId')).lean<CycleDoc>();
 }
@@ -120,6 +125,7 @@ async function toSummaries(docs: CycleDoc[], participantScope: FilterQuery<Cycle
       code: doc.code,
       name: doc.name,
       type: doc.type,
+      answerMode: cycleAnswerMode(doc),
       status: doc.status,
       tz: doc.tz,
       sampling: windowDto(doc.sampling),
@@ -275,6 +281,7 @@ export async function createCycle(ctx: RequestContext, input: CreateCycleInput):
       name: input.name,
       code: input.code,
       type: input.type,
+      answerMode: input.answerMode ?? 'SINGLE',
       tz,
       sampling: windows.sampling,
       assessment: windows.assessment,
@@ -294,6 +301,7 @@ export async function createCycle(ctx: RequestContext, input: CreateCycleInput):
 
 export async function updateCycle(ctx: RequestContext, id: string, patch: PatchCycleInput): Promise<CycleDetailDto> {
   const before = await requireVisibleCycle(ctx, id);
+  assertAnswerModeChangeable(before, patch);
   if (before.status === 'SCORED' || before.status === 'ARCHIVED') {
     throw new AppError('PRECONDITION_FAILED', `A ${before.status} cycle can no longer be changed`, { status: before.status });
   }
@@ -304,6 +312,13 @@ export async function updateCycle(ctx: RequestContext, id: string, patch: PatchC
   const [beforeDto, afterDto] = await Promise.all([toDetail(before, scope), toDetail(after, scope)]);
   await audit(ctx, { action: 'cycle.updated', entity: 'cycle', entityId: id, before: beforeDto, after: afterDto });
   return afterDto;
+}
+
+/** Forms are built and answers stored in the cycle's mode, so only a DRAFT may change it; restating the current mode is not a change. */
+function assertAnswerModeChangeable(before: CycleDoc, patch: PatchCycleInput): void {
+  const answerMode = cycleAnswerMode(before);
+  if (before.status === 'DRAFT' || patch.answerMode === undefined || patch.answerMode === answerMode) return;
+  throw new AppError('PRECONDITION_FAILED', 'The answer mode is fixed once the cycle is published', { answerMode, status: before.status });
 }
 
 function applyWindowPatch(current: CycleWindowDoc, patch: WindowPatch | undefined): WindowInput {
@@ -321,6 +336,7 @@ async function draftChanges(before: CycleDoc, patch: PatchCycleInput): Promise<P
     $set.code = patch.code;
   }
   if (patch.type !== undefined) $set.type = patch.type;
+  if (patch.answerMode !== undefined) $set.answerMode = patch.answerMode;
   if (patch.minSampleSize !== undefined) $set.minSampleSize = patch.minSampleSize;
   if (patch.reminders !== undefined) $set.reminders = patch.reminders;
   if (patch.surveyVersions !== undefined) $set.surveyVersions = surveyVersionRefs(patch.surveyVersions, before.surveyVersions);
@@ -351,7 +367,7 @@ const PUBLISHED_PATCHABLE = ['sampling.end', 'assessment.end', 'reminders'] as c
 
 /** After publishing: end-date extensions and reminder settings only (ARCHITECTURE §6 `PATCH /cycles/:id`). */
 function publishedChanges(before: CycleDoc, patch: PatchCycleInput): Partial<CycleDoc> {
-  const offending = Object.keys(patch).filter((key) => !['sampling', 'assessment', 'reminders'].includes(key));
+  const offending = Object.keys(patch).filter((key) => !['sampling', 'assessment', 'reminders', 'answerMode'].includes(key));
   for (const key of ['sampling', 'assessment'] as const) {
     const start = patch[key]?.start;
     if (start !== undefined && start !== before[key].start.wall) offending.push(`${key}.start`);
