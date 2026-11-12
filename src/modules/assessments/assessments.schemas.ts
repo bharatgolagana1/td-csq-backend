@@ -162,7 +162,7 @@ export type SelfAssessmentDto = z.infer<typeof selfAssessmentResponse>;
 const cycleSummary = z.object({ id: z.string(), code: z.string(), name: z.string() });
 const operatorSummary = z.object({ id: z.string(), code: z.string(), name: z.string() });
 
-/** Who answered; masked for ACO users unless `settings.revealAssessorIdentity` (SELF rows are never masked). */
+/** Who answered; a customer only with `assessments.details` and a platform role or `settings.revealAssessorIdentity` (SELF rows are never masked). */
 const assessorResponse = z.object({
   name: z.string().nullable(),
   email: z.string().nullable(),
@@ -184,9 +184,9 @@ export const historyRowResponse = z.object({
   progress: progressResponse,
   startedAt: z.string(),
   submittedAt: z.string().nullable(),
-  /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated, and on an IMPORT_EXPORT assessment. */
+  /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated, on an IMPORT_EXPORT assessment, and on a customer's without `assessments.scores`. */
   score: z.number().nullable(),
-  /** The same per direction on an IMPORT_EXPORT assessment; null on a SINGLE one. */
+  /** The same per direction on an IMPORT_EXPORT assessment; null on a SINGLE one (and, like `score`, on a customer's without `assessments.scores`). */
   importScore: z.number().nullable(),
   exportScore: z.number().nullable(),
 });

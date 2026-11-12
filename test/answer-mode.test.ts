@@ -22,7 +22,7 @@ import { SettingsModel } from '../src/modules/settings/settings.model.js';
 
 import { createTestCustomer, createTestCycle, createTestSurvey, ctxOf, type TestCycle, type TestSurvey } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
-import { airportIdByIata, createTestOperator, expectError } from './helpers/fixtures.js';
+import { airportIdByIata, createTestOperator, expectError, grantTasks, revokeTasks } from './helpers/fixtures.js';
 
 const DAY = 86_400_000;
 /** The FF form of `createTestSurvey`, in display order. */
@@ -154,6 +154,25 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
 
     const singleRows = await superAdmin.get(`/api/v1/assessments?cycleId=${single.id}&status=SUBMITTED&acoId=${acoA}`);
     expect(singleRows.body.data[0]).toMatchObject({ score: 4, importScore: null, exportScore: null });
+  });
+
+  it('without assessments.scores the operator sees a customer row with no import or export score; its own self-assessment keeps both', async () => {
+    const q = survey.q['Q.OPT'];
+    const saved = await adminA.patch(`/api/v1/assessments/self/${split.id}/DOMESTIC/answers`).send({ answers: [{ questionId: q, direction: 'IMPORT', rating: 4 }, { questionId: q, direction: 'EXPORT', rating: 3 }] });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const rowsOf = async () => (await adminA.get(`/api/v1/assessments?cycleId=${split.id}`)).body.data as { id: string; kind: string; score: number | null; importScore: number | null; exportScore: number | null }[];
+
+    // ACO_ADMIN holds neither customer-assessment task by default.
+    const rows = await rowsOf();
+    expect(rows.find((row) => row.kind === 'CUSTOMER')).toMatchObject({ id: splitA, score: null, importScore: null, exportScore: null });
+    expect(rows.find((row) => row.kind === 'SELF')).toMatchObject({ score: null, importScore: 4, exportScore: 3 });
+
+    await grantTasks('ACO_ADMIN', ['assessments.scores']);
+    try {
+      expect((await rowsOf()).find((row) => row.kind === 'CUSTOMER')).toMatchObject({ id: splitA, score: null, importScore: 5, exportScore: 2 });
+    } finally {
+      await revokeTasks('ACO_ADMIN', ['assessments.scores']);
+    }
   });
 });
 

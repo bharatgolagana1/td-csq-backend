@@ -27,7 +27,9 @@ import {
   type TestSurvey,
 } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
-import { airportIdByIata, expectError, grantTasks } from './helpers/fixtures.js';
+import { airportIdByIata, expectError, grantTasks, revokeTasks } from './helpers/fixtures.js';
+
+const CUSTOMER_TASKS = ['assessments.scores', 'assessments.details'];
 
 let t: TestApp;
 let superAdmin: TestUser;
@@ -50,11 +52,6 @@ function invitation(customerId: string, acoId: string, surveyType: 'DOMESTIC' | 
 
 beforeAll(async () => {
   t = await createTestApp();
-   // NEW: Grant full assessment access to the authorized test administrator.
-  await grantTasks('ACO_ADMIN', [
-    'assessments.scores',
-    'assessments.details',
-  ]);
   // This file asserts on the event itself; the real listeners are exercised by the flow test.
   clearEventHandlers();
   on('assessment.submitted', 'test.recordSubmitted', async (payload) => {
@@ -468,6 +465,8 @@ describe('history, masking, tenancy and export', () => {
   let submittedB: string;
 
   beforeAll(async () => {
+    // The customer-assessment tasks are not ACO_ADMIN defaults; these tests are about masking with them granted (without: the last block).
+    await grantTasks('ACO_ADMIN', CUSTOMER_TASKS);
     const b = await getOrCreateForInvitation(invitation(customerB, idString(adminB.org._id)));
     submittedB = b.id;
     await patchAnswers(submittedB, [
@@ -596,5 +595,110 @@ describe('history, masking, tenancy and export', () => {
     expect(mine.text).not.toMatch(/Dev Patel|bombayfreight/);
     expectError(await superAdmin.get('/api/v1/assessments/export'), 400, 'VALIDATION');
     expectError(await adminB.get(`/api/v1/assessments/export?cycleId=${idString(newId())}`), 404, 'NOT_FOUND');
+  });
+
+  describe('the customer-assessment tasks', () => {
+    interface Row {
+      id: string;
+      kind: string;
+      assessorName: string | null;
+      assessorEmailMasked: string | null;
+      customerId: string | null;
+      assessor: { name: string | null; email: string | null; revealed: boolean };
+      score: number | null;
+    }
+    const HIDDEN = { assessorName: null, assessorEmailMasked: null, customerId: null, assessor: { name: null, email: null, revealed: false } };
+    const customerRowOf = async (user: TestUser): Promise<Row> => ((await user.get(`/api/v1/assessments?cycleId=${cycle.id}&kind=CUSTOMER&acoId=${idString(adminB.org._id)}`)).body.data as Row[]).find((row) => row.id === submittedB)!;
+    const withRevealSetting = async (check: () => Promise<void>): Promise<void> => {
+      expect((await superAdmin.patch('/api/v1/settings').send({ revealAssessorIdentity: true })).status).toBe(200);
+      try {
+        await check();
+      } finally {
+        await superAdmin.patch('/api/v1/settings').send({ revealAssessorIdentity: false });
+      }
+    };
+
+    beforeAll(() => revokeTasks('ACO_ADMIN', CUSTOMER_TASKS));
+
+    it('ACFI_ANALYST holds both by default: who answered, the score, the return and the customer export', async () => {
+      const analyst = await t.asUser({ orgType: 'ACFI', roleCode: 'ACFI_ANALYST' });
+      expect((await analyst.get('/api/v1/me')).body.data.active.tasks).toEqual(expect.arrayContaining(CUSTOMER_TASKS));
+      expect(await customerRowOf(analyst)).toMatchObject({ assessorName: 'Dev Patel', customerId: customerB, assessor: { revealed: true }, score: 4.3 });
+      expect((await analyst.get(`/api/v1/assessments/${submittedB}`)).status).toBe(200);
+      const csv = await analyst.get(`/api/v1/assessments/export?cycleId=${cycle.id}&kind=CUSTOMER`);
+      expect(csv.status).toBe(200);
+      expect(csv.text).toContain('Dev Patel,dev@bombayfreight.test,SUBMITTED');
+    });
+
+    it('without them an operator still lists its customer assessments, anonymous and unscored even with identities revealed, and their return is 403', async () => {
+      expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
+      expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
+      await withRevealSetting(async () => {
+        expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
+        expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
+      });
+      // Out of scope stays 404, never 403.
+      expectError(await adminA.get(`/api/v1/assessments/${submittedB}`), 404, 'NOT_FOUND');
+    });
+
+    it('the operator’s own self-assessments are not affected: assessor, score and return', async () => {
+      const rows = (await adminA.get(`/api/v1/assessments?cycleId=${cycle.id}&kind=SELF&surveyType=DOMESTIC`)).body.data as Row[];
+      expect(rows).toHaveLength(1);
+      // Ravi Kumar rated 4, 3, NA, 5 and 2.
+      expect(rows[0]).toMatchObject({ assessorName: 'Ravi Kumar', assessor: { name: 'Ravi Kumar', revealed: true }, score: 3.5 });
+      const one = await adminA.get(`/api/v1/assessments/${rows[0]!.id}`);
+      expect(one.status).toBe(200);
+      expect(one.body.data).toMatchObject({ kind: 'SELF', assessorName: 'Ravi Kumar', score: 3.5 });
+      expect(one.body.data.answers).toHaveLength(5);
+    });
+
+    it('identity needs assessments.details and then a platform role or the setting; scores are a task of their own', async () => {
+      await grantTasks('ACO_ADMIN', ['assessments.details']);
+      try {
+        // Details alone: the return opens, the identity stays hidden until the setting reveals it, the score stays hidden.
+        expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
+        expect((await adminB.get(`/api/v1/assessments/${submittedB}`)).body.data).toMatchObject({ ...HIDDEN, score: null });
+        await withRevealSetting(async () => {
+          expect(await customerRowOf(adminB)).toMatchObject({ assessorName: 'Dev Patel', assessorEmailMasked: 'd***@bombayfreight.test', customerId: customerB, assessor: { revealed: true }, score: null });
+        });
+      } finally {
+        await revokeTasks('ACO_ADMIN', ['assessments.details']);
+      }
+
+      // A platform role without details: scored, but anonymous.
+      await revokeTasks('ACFI_ANALYST', ['assessments.details']);
+      try {
+        const analyst = await t.asUser({ orgType: 'ACFI', roleCode: 'ACFI_ANALYST' });
+        expect(await customerRowOf(analyst)).toMatchObject({ ...HIDDEN, score: 4.3 });
+        expectError(await analyst.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
+      } finally {
+        await grantTasks('ACFI_ANALYST', ['assessments.details']);
+      }
+    });
+
+    it('the export without details: kind=CUSTOMER is 403, otherwise self-assessments only; with details but no scores the customer lines carry no score', async () => {
+      expectError(await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}&kind=CUSTOMER`), 403, 'FORBIDDEN');
+      for (const kind of ['', '&kind=SELF']) {
+        const res = await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}${kind}`);
+        expect(res.status).toBe(200);
+        const lines = res.text.trim().split('\n').slice(1);
+        // ACO-B's DOMESTIC self-assessment, five questions.
+        expect(lines).toHaveLength(5);
+        expect(lines.every((line) => line.includes(',ACO-B,SELF,'))).toBe(true);
+      }
+
+      await grantTasks('ACO_ADMIN', ['assessments.details']);
+      try {
+        const res = await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}&kind=CUSTOMER`);
+        expect(res.status).toBe(200);
+        const lines = res.text.trim().split('\n').slice(1);
+        expect(lines).toHaveLength(4);
+        // The score column (the 11th) is empty; the ratings are there.
+        expect(lines.map((line) => line.split(',')[10])).toEqual(['', '', '', '']);
+        expect(lines.find((line) => line.includes('Q.OPT'))).toContain(',5,false,');
+      } finally {
+        await revokeTasks('ACO_ADMIN', ['assessments.details']);
+      }
+    });
   });
 });
