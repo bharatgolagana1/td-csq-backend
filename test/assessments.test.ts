@@ -756,7 +756,10 @@ describe('history, masking, tenancy and export', () => {
 
     it('without them an operator still lists its customer assessments, anonymous and unscored even with identities revealed, and their return is 403', async () => {
       expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
-      expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
+      // The 403 carries nothing of the return, its section remarks included.
+      const refused = await adminB.get(`/api/v1/assessments/${submittedB}`);
+      expectError(refused, 403, 'FORBIDDEN');
+      expect(JSON.stringify(refused.body)).not.toContain('Remarks on');
       await withRevealSetting(async () => {
         expect(await customerRowOf(adminB)).toMatchObject({ ...HIDDEN, score: null });
         expectError(await adminB.get(`/api/v1/assessments/${submittedB}`), 403, 'FORBIDDEN');
@@ -806,9 +809,10 @@ describe('history, masking, tenancy and export', () => {
         const res = await adminB.get(`/api/v1/assessments/export?cycleId=${cycle.id}${kind}`);
         expect(res.status).toBe(200);
         const lines = res.text.trim().split('\n').slice(1);
-        // ACO-B's DOMESTIC self-assessment, five questions.
+        // ACO-B's DOMESTIC self-assessment, five questions; no customer line, so no customer remark either.
         expect(lines).toHaveLength(5);
         expect(lines.every((line) => line.includes(',ACO-B,SELF,'))).toBe(true);
+        expect(res.text).not.toContain('Remarks on');
       }
 
       await grantTasks('ACO_ADMIN', ['assessments.details']);
@@ -820,6 +824,9 @@ describe('history, masking, tenancy and export', () => {
         // The score column (the 11th) is empty; the ratings are there.
         expect(lines.map((line) => line.split(',')[10])).toEqual(['', '', '', '']);
         expect(lines.find((line) => line.includes('Q.OPT'))).toContain(',5,false,');
+        // With details, the customer lines carry their section remarks.
+        expect(lines.find((line) => line.includes('Q.OPT'))).toMatch(/,Remarks on Infrastructure$/);
+        expect((await adminB.get(`/api/v1/assessments/${submittedB}`)).body.data.sectionRemarks).toHaveLength(2);
       } finally {
         await revokeTasks('ACO_ADMIN', ['assessments.details']);
       }
