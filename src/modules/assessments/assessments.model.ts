@@ -39,6 +39,7 @@ export interface StoredAnswer {
   direction?: AnswerDirection | null;
   rating: Rating | null;
   na: boolean;
+  /** Null on an IMPORT_EXPORT answer (its section remarks carry the free text); one saved before that rule keeps its text. */
   comment: string | null;
   followUp: string[];
 }

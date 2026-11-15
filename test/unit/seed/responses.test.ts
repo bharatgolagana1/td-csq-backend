@@ -1,7 +1,7 @@
 // The demo's answer generator: one answer per question on a SINGLE form, an
 // IMPORT and an EXPORT answer per question on an IMPORT_EXPORT one (export a
-// touch lower), every batch valid against the form rules; and one remark per
-// section.
+// touch lower, no comments), every batch valid against the form rules; and
+// one remark per section.
 import { describe, expect, it } from 'vitest';
 
 import { missingSectionRemarks, readinessOf, validateAnswers, type AssessmentForm, type FormQuestion } from '../../../src/modules/assessments/assessments.form.js';
@@ -54,6 +54,20 @@ describe('generateAnswers', () => {
     const validation = validateAnswers(form, answers, 'IMPORT_EXPORT');
     expect(validation.ok).toBe(true);
     if (validation.ok) expect(readinessOf(form, validation.answers, 'IMPORT_EXPORT')).toMatchObject({ answered: 6, total: 6, complete: true });
+  });
+
+  it('writes no comment on an IMPORT_EXPORT form, even where a SINGLE one needs it, and still validates', () => {
+    const base = formOf(40);
+    const [category] = base.categories;
+    const strict: AssessmentForm = { ...base, categories: [{ ...category!, questions: category!.questions.map((q, i) => ({ ...q, commentMode: i % 2 === 0 ? 'REQUIRED' : 'REQUIRED_ON_LOW' })) }] };
+    const split = generateAnswers(strict, { quality: 0.1, bias: {} }, new Rng('strict'), { naRate: 0, self: false, answerMode: 'IMPORT_EXPORT' });
+    expect(split.some((answer) => (answer.rating ?? 5) <= 2)).toBe(true);
+    expect(split.every((answer) => answer.comment === undefined)).toBe(true);
+    expect(validateAnswers(strict, split, 'IMPORT_EXPORT').ok).toBe(true);
+
+    const single = generateAnswers(strict, { quality: 0.1, bias: {} }, new Rng('strict'), { naRate: 0, self: false });
+    expect(single.filter((answer, i) => i % 2 === 0).every((answer) => typeof answer.comment === 'string')).toBe(true);
+    expect(validateAnswers(strict, single).ok).toBe(true);
   });
 
   it('rates export a little below import', () => {
