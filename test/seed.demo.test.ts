@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { idString } from '../src/core/ids.js';
 import { AirportModel } from '../src/modules/airports/airports.model.js';
 import { AssessmentModel } from '../src/modules/assessments/assessments.model.js';
+import { getParticipant } from '../src/modules/cycles/participants.service.js';
 import { RoleModel } from '../src/modules/identity/roles.model.js';
 import { UserModel } from '../src/modules/identity/users.model.js';
 import { OrganisationModel } from '../src/modules/organisations/organisations.model.js';
@@ -129,9 +130,20 @@ describe('seed:demo', () => {
     }
     expect(report.byStakeholder.FF.mean).not.toBeNull();
     expect(report.byStakeholder.CB.mean).not.toBeNull();
-    expect(report.assessorStats.total).toBeGreaterThanOrEqual(60);
-    expect(report.assessorStats.completed).toBeGreaterThan(40);
+    // The Assessors card counts the survey shown, the same submissions as the hero's "N customer".
+    expect(report.assessorStats.completed).toBe(report.assessments.customer);
+    expect(report.assessorStats.total).toBeGreaterThanOrEqual(30);
+    expect(report.assessorStats.completed).toBeGreaterThan(20);
     expect(report.assessorStats.inProgress).toBeGreaterThan(0);
+    // Domestic and International together are the participant's counters, which sum both.
+    const international = await superAdmin.get(`/api/v1/reports/operator/${acoId}?cycleId=${report.cycle.id}&surveyType=INTERNATIONAL`);
+    expect(international.status, JSON.stringify(international.body)).toBe(200);
+    const domestic = report.assessorStats as { total: number; completed: number };
+    const intl = international.body.data.assessorStats as { total: number; completed: number };
+    expect(intl.completed).toBe(international.body.data.assessments.customer);
+    const stats = (await getParticipant(report.cycle.id, acoId))?.stats;
+    expect(domestic.total + intl.total).toBe(stats?.invited);
+    expect(domestic.completed + intl.completed).toBe(stats?.completed);
     expect(report.feedbackDistribution.find((bucket: { label: string }) => bucket.label === 'Excellent').count).toBeGreaterThan(0);
     // The airport ranking is ACFI's national report, not the operator dashboard.
     expect(report).not.toHaveProperty('nationalTable');
