@@ -30,14 +30,14 @@ import { selectOperatorCycle, type OperatorSelection } from './reports.selection
 import {
   loadAirport,
   loadCycle,
-  loadReadyToSend,
+  loadInvitationFunnel,
   loadScores,
   loadSubmittedAssessmentCounts,
   loadSubmittedCustomerAssessments,
   loadSurveyTree,
   OVERALL_REF_ID,
+  type InvitationFunnelView,
   type OperatorView,
-  type ParticipantView,
   type ScoreRowView,
   type ScoreSetView,
   type SubmittedAssessmentView,
@@ -88,14 +88,16 @@ function categoriesOf(tree: SurveyTreeView, rows: Map<string, ScoreRowView>): Ca
 }
 
 /**
- * `started` counts every assessment opened, finished ones included. A completed
- * assessment was necessarily begun, so `begun` never trails `completed` even
- * when the opener was not counted; the funnel never goes negative. `total`
- * counts the invitations e-mailed; `readyToSend` those prepared at lock that
- * wait for the assessment window.
+ * The funnel of the report's survey type (the participant's own counters sum
+ * both types, which put a Domestic report beside the International invitations
+ * too). `started` counts every assessment opened, finished ones included. A
+ * completed assessment was necessarily begun, so `begun` never trails
+ * `completed` even when the opener was not counted; the funnel never goes
+ * negative. `total` counts the invitations e-mailed; `readyToSend` those
+ * prepared at lock that wait for the assessment window.
  */
-function assessorStatsOf(participant: ParticipantView, readyToSend: number): AssessorStatsDto {
-  const { invited, started, completed } = participant.stats;
+function assessorStatsOf(funnel: InvitationFunnelView): AssessorStatsDto {
+  const { invited, started, completed, readyToSend } = funnel;
   const begun = Math.max(started, completed);
   return {
     total: invited,
@@ -138,14 +140,14 @@ async function comparisonOf(
 export async function operatorReport(ctx: RequestContext, acoId: string, query: OperatorReportQuery): Promise<OperatorReportDto> {
   const inputs = await loadOperatorInputs(ctx, acoId, query);
   const { operator, selection, scores, rows, tree } = inputs;
-  const { cycle, participant, surveyType, direction, provisional } = selection;
+  const { cycle, surveyType, direction, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
-  const [airport, comparison, assessments, readyToSend] = await Promise.all([
+  const [airport, comparison, assessments, funnel] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
-    loadReadyToSend(cycle.id, operator.id),
+    loadInvitationFunnel(cycle.id, surveyType, operator.id),
   ]);
 
   return {
@@ -165,7 +167,7 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
     feedbackDistribution: distributionOf(scores),
     categories: categoriesOf(tree, rows),
     byStakeholder: byTypeOf(overall),
-    assessorStats: assessorStatsOf(participant, readyToSend),
+    assessorStats: assessorStatsOf(funnel),
     assessments,
   };
 }

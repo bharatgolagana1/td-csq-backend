@@ -1,7 +1,7 @@
 // The national view (ARCHITECTURE §6 `GET /reports/national`): airports
 // ranked (the scoring module's national table), operators ranked by name, the
 // category averages across operators and the participation funnel of the
-// cycle (REQUIREMENTS §24).
+// cycle (REQUIREMENTS §24) — all of it for the one survey type asked for.
 import type { RequestContext } from '../../core/auth/session.js';
 
 import { averageOf, cycleSummaryOf, indexRows, percentage, round2, rowAt } from './reports.figures.js';
@@ -10,13 +10,14 @@ import { selectNationalCycle } from './reports.selection.js';
 import {
   loadAirports,
   loadNationalTable,
+  loadInvitationFunnel,
   loadOperators,
   loadParticipants,
-  loadReadyToSend,
   loadScores,
   loadSurveyTree,
   OVERALL_REF_ID,
   type CycleView,
+  type InvitationFunnelView,
   type ParticipantView,
   type ScoreRowView,
   type SurveyTreeView,
@@ -28,7 +29,7 @@ function byRank<T extends { rank: number | null }>(name: (row: T) => string): (a
   return (a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || name(a).localeCompare(name(b));
 }
 
-/** Every airport in the national table or with a participant; the latter without figures until scored. */
+/** Every airport in the national table or with a participant running the survey type; the latter without figures until scored. */
 async function airportsRanked(
   cycle: CycleView,
   surveyType: SurveyType,
@@ -58,19 +59,39 @@ async function airportsRanked(
     .sort(byRank((row) => row.iata));
 }
 
+/**
+ * The operators that run the survey type and their funnel for it. A BOTH
+ * cycle's participants each count both types in `cycle_participants.stats`,
+ * so the funnel comes from that type's invitations.
+ */
+function participationOf(typed: readonly ParticipantView[], funnel: InvitationFunnelView): NationalReportDto['participation'] {
+  const { invited, readyToSend, started, completed } = funnel;
+  return {
+    airports: new Set(typed.map((participant) => participant.airportId)).size,
+    operators: typed.length,
+    sampleLocked: typed.filter((participant) => participant.sampling.status === 'LOCKED').length,
+    invited,
+    readyToSend,
+    started,
+    completed,
+    pending: Math.max(0, invited - completed),
+    completionRate: percentage(completed, invited),
+  };
+}
+
 export async function nationalReport(ctx: RequestContext, query: NationalReportQuery): Promise<NationalReportDto> {
   const { cycle, surveyType, direction, provisional } = await selectNationalCycle(ctx, query);
   const participants = await loadParticipants(cycle.id);
   const typed = participants.filter((participant) => participant.surveyTypes.includes(surveyType));
   const surveyId = cycle.surveyVersions[surveyType];
 
-  const [airports, operators, operatorAirports, scores, tree, readyToSend] = await Promise.all([
-    airportsRanked(cycle, surveyType, direction, participants),
+  const [airports, operators, operatorAirports, scores, tree, funnel] = await Promise.all([
+    airportsRanked(cycle, surveyType, direction, typed),
     loadOperators(typed.map((participant) => participant.acoId)),
     loadAirports(typed.map((participant) => participant.airportId)),
     Promise.all(typed.map((participant) => loadScores(cycle.id, participant.acoId, surveyType, direction))),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
-    loadReadyToSend(cycle.id),
+    loadInvitationFunnel(cycle.id, surveyType),
   ]);
   const indexed: Map<string, ScoreRowView>[] = scores.map((set) => indexRows(set.rows));
   const rankOf = Math.max(0, ...indexed.map((rows) => rowAt(rows, 'OVERALL', OVERALL_REF_ID)?.rankOf ?? 0));
@@ -94,10 +115,6 @@ export async function nationalReport(ctx: RequestContext, query: NationalReportQ
     })
     .sort(byRank((row) => row.name));
 
-  const invited = participants.reduce((sum, participant) => sum + participant.stats.invited, 0);
-  const started = participants.reduce((sum, participant) => sum + participant.stats.started, 0);
-  const completed = participants.reduce((sum, participant) => sum + participant.stats.completed, 0);
-
   return {
     cycle: cycleSummaryOf(cycle),
     surveyType,
@@ -113,16 +130,6 @@ export async function nationalReport(ctx: RequestContext, query: NationalReportQ
         name: category.name,
         ...averageOf(indexed.map((rows) => rowAt(rows, 'CATEGORY', category.code)?.customer.mean ?? null)),
       })),
-    participation: {
-      airports: new Set(participants.map((participant) => participant.airportId)).size,
-      operators: participants.length,
-      sampleLocked: participants.filter((participant) => participant.sampling.status === 'LOCKED').length,
-      invited,
-      readyToSend,
-      started,
-      completed,
-      pending: Math.max(0, invited - completed),
-      completionRate: percentage(completed, invited),
-    },
+    participation: participationOf(typed, funnel),
   };
 }

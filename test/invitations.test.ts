@@ -15,6 +15,7 @@ import { InvitationModel, type InvitationDoc } from '../src/modules/invitations/
 import {
   activateCycle,
   activateOpenCycles,
+  countInvitationFunnel,
   countPendingInvitations,
   createPendingForSamples,
   expireDue,
@@ -526,6 +527,19 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(status.body.data.submittedAt).toBeTruthy();
       expectError(await t.anon.post(`${PUBLIC}/${token}/otp`), 412, 'PRECONDITION_FAILED');
     });
+  });
+});
+
+describe('countInvitationFunnel', () => {
+  it('splits the participant’s counters by survey type: the types add up to cycle_participants.stats', async () => {
+    // Operator A: Domestic for both customers (one verified and submitted), International for the BOTH customer; all three sent.
+    const domestic = await countInvitationFunnel(cycleId, { acoId: acoA, surveyType: 'DOMESTIC' });
+    const international = await countInvitationFunnel(cycleId, { acoId: acoA, surveyType: 'INTERNATIONAL' });
+    expect(domestic).toEqual({ readyToSend: 0, invited: 2, started: 1, completed: 1 });
+    expect(international).toEqual({ readyToSend: 0, invited: 1, started: 0, completed: 0 });
+    expect(await participantStats(acoA)).toEqual({ invited: 3, started: 1, completed: 1 });
+    expect(await countInvitationFunnel(cycleId, { surveyType: 'DOMESTIC' })).toEqual({ readyToSend: 0, invited: 3, started: 1, completed: 1 });
+    expect(await countInvitationFunnel(idString(newId()))).toEqual({ readyToSend: 0, invited: 0, started: 0, completed: 0 });
   });
 });
 
