@@ -1,4 +1,5 @@
 import { layout, link, paragraphs } from './html.js';
+import { surveyHeading } from './survey.js';
 import type { Template } from './types.js';
 
 export interface AssessmentInvitationVars {
@@ -7,6 +8,7 @@ export interface AssessmentInvitationVars {
   operatorName: string;
   airportName: string;
   cycleName: string;
+  /** "Domestic" or "International": a customer in both gets one invitation per survey. */
   surveyType: string;
   assessmentStart: string;
   assessmentEnd: string;
@@ -14,10 +16,10 @@ export interface AssessmentInvitationVars {
   url: string;
 }
 
-/** REQUIREMENTS §15: assessment name, airport, ACO, window and the secure link; access is by OTP. */
+/** REQUIREMENTS §15: assessment name, airport, ACO, window and the secure link; access is by OTP. The subject names the survey. */
 export const assessmentInvitation: Template<AssessmentInvitationVars> = {
   render(vars, common) {
-    const subject = `${vars.cycleName}: please rate ${vars.operatorName}`;
+    const subject = `${surveyHeading(vars.cycleName, vars.surveyType)}: please rate ${vars.operatorName}`;
     const where = vars.airportName ? `${vars.operatorName} at ${vars.airportName}` : vars.operatorName;
     const lines = [
       `Dear ${vars.contactName},`,

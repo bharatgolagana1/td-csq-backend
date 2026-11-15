@@ -366,7 +366,7 @@ async function sendReminder(invitation: InvitationDoc, cycle: CycleFacts, index:
   await send({
     template: 'assessment-reminder',
     to: updated.email,
-    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, assessmentEnd: mail.assessmentEnd, url: invitationLink(token), reminderNumber: index + 1 },
+    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, surveyType: mail.surveyType, assessmentEnd: mail.assessmentEnd, url: invitationLink(token), reminderNumber: index + 1 },
     refs: { cycleId: idString(updated.cycleId), acoId: idString(updated.acoId), customerId: idString(updated.customerId), invitationId: idString(updated._id) },
   });
 }
@@ -447,7 +447,7 @@ export async function completeInvitation(invitationId: string, options: HandlerO
   await send({
     template: 'assessment-thank-you',
     to: invitation.email,
-    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName },
+    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, surveyType: mail.surveyType },
     refs: { cycleId: idString(invitation.cycleId), acoId: idString(invitation.acoId), customerId: idString(invitation.customerId), invitationId },
   });
   return invitation;

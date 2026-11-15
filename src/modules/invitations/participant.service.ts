@@ -24,7 +24,7 @@ import {
 import { effectiveState, isExpired, isLive, transition } from './domain/states.js';
 import { generateOtp, hashOtp, maskEmail, maskName, otpMatches } from './domain/token.js';
 import { invitationsConfig } from './invitations.config.js';
-import { contactNameOf, operatorFacts } from './invitations.mail.js';
+import { contactNameOf, operatorFacts, surveyTypeLabel } from './invitations.mail.js';
 import { InvitationModel, type InvitationDoc } from './invitations.model.js';
 import {
   assessmentDraft,
@@ -157,7 +157,7 @@ export async function requestOtp(token: string, options: OtpRequestOptions = {})
   await send({
     template: 'assessment-otp',
     to: updated.email,
-    vars: { contactName: contactNameOf(updated), operatorName: operator.name, otp, expiresInMinutes: OTP_POLICY.ttlMs / 60_000 },
+    vars: { contactName: contactNameOf(updated), operatorName: operator.name, surveyType: surveyTypeLabel(updated.surveyType), otp, expiresInMinutes: OTP_POLICY.ttlMs / 60_000 },
     refs: { cycleId: idString(updated.cycleId), acoId: idString(updated.acoId), customerId: idString(updated.customerId), invitationId: idString(updated._id) },
   });
   return { sent: true, expiresAt: expiresAt.toISOString(), ...(invitationsConfig().revealOtp ? { devOtp: otp } : {}) };

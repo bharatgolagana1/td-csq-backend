@@ -347,6 +347,10 @@ registration link session), or a task code. All `[list]` endpoints accept
   per survey type). Counter `selected / required`. Lock refused below the
   minimum unless eligible < required and everything eligible is selected.
   Lock is a transaction. Unlock is ACFI-only, reasoned and audited.
+- **Participant e-mails** name the cycle and the survey ("CSQ 2026 H2 ·
+  Domestic survey: please rate X"; the reminder, the thank-you and the OTP
+  e-mail the same way), because a customer marked BOTH in a BOTH cycle has
+  one invitation per survey.
 - **Participant link.** Token: 32 random bytes, base64url, stored hashed. OTP:
   6 digits, 10 min, 5 attempts, resend after 30 s, 3 per 10 min. Session JWT
   12 h. Link expires at `assessment.end`; after that the page shows "closed".

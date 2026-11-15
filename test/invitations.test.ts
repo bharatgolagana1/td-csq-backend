@@ -189,6 +189,8 @@ describe('activateCycle', () => {
       expect(mails[0]!.status).toBe('SENT');
       expect(mails[0]!.body).toContain('http://localhost:5173/assess/');
       expect(mails[0]!.body).toContain('INV-A Cargo');
+      // The subject names the survey: a customer in both gets two invitations that tell apart.
+      expect(mails[0]!.subject).toBe(`Cycle INV-BOTH · ${doc.surveyType === 'DOMESTIC' ? 'Domestic' : 'International'} survey: please rate INV-A Cargo`);
       const token = await tokenFromMail(idString(doc._id));
       expect(hashToken(token)).toBe(doc.tokenHash);
       const audit = await AuditModel.findOne({ action: 'invitation.sent', entityId: idString(doc._id) }).lean();
@@ -270,7 +272,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
     expect(otp).toMatch(/^\d{6}$/);
     const mail = (await mailsFor(idString(invitation._id), 'assessment-otp'))[0]!;
     expect(mail.to).toBe('meera@bothways.test');
-    expect(mail.subject).toContain(otp);
+    expect(mail.subject).toBe(`${otp} is your Air Cargo Forum India CSQ code · Domestic survey`);
     const doc = await InvitationModel.findById(invitation._id).lean();
     expect(doc?.otp.hash).toMatch(/^[0-9a-f]{64}$/);
     expect(doc?.otp.hash).not.toContain(otp);
@@ -477,6 +479,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(thanks).toHaveLength(1);
       expect(thanks[0]!.to).toBe('meera@bothways.test');
       expect(thanks[0]!.body).toContain('INV-A Cargo');
+      expect(thanks[0]!.subject).toBe('Cycle INV-BOTH · Domestic survey: thank you for rating INV-A Cargo');
       expect((await participantStats(acoA)).completed).toBe(1);
 
       expectError(await withSession('/submit').post(), 412, 'PRECONDITION_FAILED');
@@ -597,7 +600,7 @@ describe('reminders', () => {
       const mails = await mailsFor(idString(doc._id), 'assessment-reminder');
       expect(mails).toHaveLength(1);
       expect(mails[0]!.vars).toMatchObject({ reminderNumber: 1 });
-      expect(mails[0]!.subject).toContain('Reminder');
+      expect(mails[0]!.subject).toMatch(new RegExp(`^Cycle INV-BOTH · ${doc.surveyType === 'DOMESTIC' ? 'Domestic' : 'International'} survey: reminder to rate INV-[AB] Cargo by `));
       const reminderToken = await tokenFromMail(idString(doc._id), 'assessment-reminder');
       const invitationToken = await tokenFromMail(idString(doc._id), 'assessment-invitation');
       expect(reminderToken).not.toBe(invitationToken);
