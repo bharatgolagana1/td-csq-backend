@@ -192,16 +192,25 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
     expect(singleRows.body.data[0]).toMatchObject({ score: 4, importScore: null, exportScore: null });
   });
 
-  it('without assessments.scores the operator sees a customer row with no import or export score; its own self-assessment keeps both', async () => {
+  it('without assessments.scores the operator sees a customer row with no import or export score; its own self-assessment keeps both once submitted', async () => {
     const q = survey.q['Q.OPT'];
     const saved = await adminA.patch(`/api/v1/assessments/self/${split.id}/DOMESTIC/answers`).send({ answers: [{ questionId: q, direction: 'IMPORT', rating: 4 }, { questionId: q, direction: 'EXPORT', rating: 3 }] });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-    const rowsOf = async () => (await adminA.get(`/api/v1/assessments?cycleId=${split.id}`)).body.data as { id: string; kind: string; score: number | null; importScore: number | null; exportScore: number | null }[];
+    const rowsOf = async () => (await adminA.get(`/api/v1/assessments?cycleId=${split.id}`)).body.data as { id: string; kind: string; status: string; score: number | null; importScore: number | null; exportScore: number | null }[];
 
     // ACO_ADMIN holds neither customer-assessment task by default.
     const rows = await rowsOf();
     expect(rows.find((row) => row.kind === 'CUSTOMER')).toMatchObject({ id: splitA, score: null, importScore: null, exportScore: null });
-    expect(rows.find((row) => row.kind === 'SELF')).toMatchObject({ score: null, importScore: 4, exportScore: 3 });
+    // The self-assessment is still a draft: no score on either side yet.
+    const self = rows.find((row) => row.kind === 'SELF');
+    expect(self).toMatchObject({ status: 'DRAFT', score: null, importScore: null, exportScore: null });
+    // Submitted (by hand: statuses are set by hand in this file), its own scores show without the task.
+    await AssessmentModel.updateOne({ _id: toId(self!.id) }, { $set: { status: 'SUBMITTED', submittedAt: new Date() } });
+    try {
+      expect((await rowsOf()).find((row) => row.kind === 'SELF')).toMatchObject({ score: null, importScore: 4, exportScore: 3 });
+    } finally {
+      await AssessmentModel.updateOne({ _id: toId(self!.id) }, { $set: { status: 'DRAFT', submittedAt: null } });
+    }
 
     await grantTasks('ACO_ADMIN', ['assessments.scores']);
     try {
