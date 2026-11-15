@@ -153,6 +153,14 @@ describe('POST /cycles', () => {
     expectError(await superAdmin.post(CYCLES).send({ ...base, code: 'csq-2026-h2', initiationDate: dateIn(1) }), 409, 'CONFLICT');
   });
 
+  it('requires a minimum sample of at least one customer, on create and on a DRAFT patch', async () => {
+    const zero = await superAdmin.post(CYCLES).send({ name: 'Zero', code: 'BAD-ZERO', type: 'DOMESTIC', initiationDate: dateIn(1), minSampleSize: 0 });
+    const issues = expectError(zero, 400, 'VALIDATION').details as { issues: { path: string; message: string }[] };
+    expect(issues.issues).toEqual([expect.objectContaining({ path: 'minSampleSize', message: 'The minimum sample is at least 1 customer' })]);
+    expectError(await superAdmin.post(CYCLES).send({ name: 'Negative', code: 'BAD-NEG', type: 'DOMESTIC', initiationDate: dateIn(1), minSampleSize: -3 }), 400, 'VALIDATION');
+    expectError(await superAdmin.patch(`${CYCLES}/${cycle1}`).send({ minSampleSize: 0 }), 400, 'VALIDATION');
+  });
+
   it('rejects an operator that is not at a participating airport, or unknown', async () => {
     const res = await superAdmin.post(CYCLES).send({
       name: 'Bad',

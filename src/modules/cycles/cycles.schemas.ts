@@ -185,6 +185,9 @@ export const cycleListQuery = listQuerySchema.extend({
 });
 export type CycleListQuery = z.infer<typeof cycleListQuery>;
 
+/** Customers each operator must sample; at least one, or there is nothing to assess. */
+const minSampleSizeSchema = z.number().int().min(1, 'The minimum sample is at least 1 customer').max(100000);
+
 export const createCycleBody = z
   .object({
     name: z.string().trim().min(1).max(200),
@@ -197,7 +200,7 @@ export const createCycleBody = z
     initiationDate: calendarDateSchema.optional(),
     sampling: windowInput.optional(),
     assessment: windowInput.optional(),
-    minSampleSize: z.number().int().min(0).max(100000),
+    minSampleSize: minSampleSizeSchema,
     reminders: remindersSchema.optional(),
     participatingAirportIds: uniqueIds.default([]),
     participatingAcoIds: uniqueIds.default([]),
@@ -217,7 +220,7 @@ export const patchCycleBody = z
     initiationDate: calendarDateSchema,
     sampling: windowPatch,
     assessment: windowPatch,
-    minSampleSize: z.number().int().min(0).max(100000),
+    minSampleSize: minSampleSizeSchema,
     reminders: remindersSchema,
     participatingAirportIds: uniqueIds,
     participatingAcoIds: uniqueIds,
