@@ -402,7 +402,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       const form = await withSession('/form').get();
       expect(form.status, JSON.stringify(form.body)).toBe(200);
       expect(form.body.data.survey).toMatchObject({ code: 'DOMESTIC', version: 1 });
-      expect(form.body.data.assessment).toMatchObject({ kind: 'CUSTOMER', status: 'DRAFT', customerType: 'FF' });
+      expect(form.body.data.assessment).toMatchObject({ kind: 'CUSTOMER', status: 'DRAFT', customerType: 'FF', lastSavedAt: null });
       expect(formQuestionIds(form.body.data).sort()).toEqual([...domestic.questionIds].sort());
       expect(form.body.data.progress).toEqual({ answered: 0, total: 3, pct: 0 });
       sections = (form.body.data.categories as { id: string }[]).map((category) => category.id);
@@ -410,7 +410,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
 
       const draft = await withSession('/draft').get();
       expect(draft.status).toBe(200);
-      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 3 } });
+      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 3 }, lastSavedAt: null });
     });
 
     it('autosaves by merge, reports readiness and refuses to submit while questions are missing', async () => {
@@ -428,6 +428,9 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(rest.body.data).toMatchObject({ answered: 3, total: 3, pct: 100 });
       const draft = await withSession('/draft').get();
       expect(draft.body.data.answers).toHaveLength(3);
+      // A reopened form can say when it was last saved: both loads carry the latest save.
+      expect(draft.body.data.lastSavedAt).toBe(rest.body.data.lastSavedAt);
+      expect((await withSession('/form').get()).body.data.assessment.lastSavedAt).toBe(rest.body.data.lastSavedAt);
       // Every question answered; the sections still need their remarks.
       expect((await withSession('/readiness').get()).body.data).toEqual({ answered: 3, total: 3, missing: [], missingSectionRemarks: sections, complete: false });
     });

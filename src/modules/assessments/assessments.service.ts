@@ -10,7 +10,7 @@ import { AppError } from '../../core/errors.js';
 import { emit, type CycleStatus, type SurveyType } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parseSort, skipLimit, type Page, type SortSpec } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
 import { findUserById } from '../identity/users.service.js';
 import { findOrganisationsByIds } from '../organisations/organisations.service.js';
@@ -574,6 +574,7 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       operator: { id: acoId, code: operator?.code ?? '?', name: operator?.name ?? 'Unknown operator' },
       kind: doc.kind,
       surveyType: doc.surveyType,
+      answerMode: answerModeOf(doc),
       customerType: doc.customerType,
       customerId: revealed && doc.customerId ? idString(doc.customerId) : null,
       assessorName: assessor.name,
@@ -582,13 +583,34 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
       status: doc.status,
       progress: progressOf(doc.answeredCount, doc.questionCount),
       startedAt: doc.startedAt.toISOString(),
+      lastSavedAt: doc.lastSavedAt?.toISOString() ?? null,
       submittedAt: doc.submittedAt?.toISOString() ?? null,
       ...(doc.kind === 'SELF' || customerScores ? ownScores(doc) : NO_SCORES),
     };
   });
 }
 
-const SORTABLE = ['startedAt', 'submittedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
+const SORTABLE = ['submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
+
+/** Newest submission first, then the drafts by their latest save, then by start; `_id` last so a page boundary never splits ties differently. */
+const HISTORY_ORDER: SortSpec = { submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 };
+
+/**
+ * The history's sort: the requested keys, then the default order for ties.
+ * Sorting by `submittedAt` (either way) keeps the drafts, which have none,
+ * after every submitted row — `status` descending comes first, as
+ * 'SUBMITTED' sorts after 'DRAFT' — and orders the drafts by their latest
+ * save in the same direction.
+ */
+export function historySort(requested: SortSpec): SortSpec {
+  const bySubmission = Object.keys(requested)[0] === 'submittedAt';
+  const direction = requested['submittedAt'] ?? -1;
+  const spec: SortSpec = bySubmission ? { status: -1, ...requested } : { ...requested };
+  for (const [field, fallback] of Object.entries(HISTORY_ORDER)) {
+    if (!(field in spec)) spec[field] = bySubmission ? direction : fallback;
+  }
+  return spec;
+}
 
 export async function listAssessments(ctx: RequestContext, query: AssessmentListQuery): Promise<Page<HistoryRowDto>> {
   const requested: FilterQuery<AssessmentDoc> = {};
@@ -599,7 +621,7 @@ export async function listAssessments(ctx: RequestContext, query: AssessmentList
   if (query.customerType) requested.customerType = query.customerType;
   if (query.surveyType) requested.surveyType = query.surveyType;
   const filter = and<AssessmentDoc>(scopeFilter(ctx), requested);
-  const sort = parseSort(query.sort, SORTABLE, '-startedAt');
+  const sort = historySort(parseSort(query.sort, SORTABLE, '-submittedAt'));
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     AssessmentModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AssessmentDoc[]>(),
@@ -643,7 +665,7 @@ export async function getAssessment(ctx: RequestContext, id: string): Promise<As
   const [row] = await toHistoryRows(ctx, [doc]);
   if (!row) throw new AppError('INTERNAL', 'History row missing');
   const form = await formFor(doc);
-  return { ...row, answerMode: answerModeOf(doc), survey: form.survey, answers: detailAnswers(form, doc.answers, answerModeOf(doc)), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
+  return { ...row, survey: form.survey, answers: detailAnswers(form, doc.answers, answerModeOf(doc)), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
 }
 
 // --- export -----------------------------------------------------------------

@@ -203,6 +203,8 @@ export const historyRowResponse = z.object({
   operator: operatorSummary,
   kind: z.enum(ASSESSMENT_KINDS),
   surveyType: z.enum(SURVEY_TYPES),
+  /** IMPORT_EXPORT answers every question once per direction and is scored by `importScore` / `exportScore`. */
+  answerMode: z.enum(ANSWER_MODES),
   customerType: z.enum(CUSTOMER_TYPES).nullable(),
   customerId: z.string().nullable(),
   assessorName: z.string().nullable(),
@@ -211,6 +213,8 @@ export const historyRowResponse = z.object({
   status: z.enum(ASSESSMENT_STATUSES),
   progress: progressResponse,
   startedAt: z.string(),
+  /** The latest autosave of answers or remarks; null until something is saved. A draft's "Last saved". */
+  lastSavedAt: z.string().nullable(),
   submittedAt: z.string().nullable(),
   /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated, on an IMPORT_EXPORT assessment, and on a customer's without `assessments.scores`. */
   score: z.number().nullable(),
@@ -237,10 +241,8 @@ export const detailAnswerResponse = answerResponse.extend({
   subcategory: z.object({ id: z.string(), code: z.string(), name: z.string() }).nullable(),
 });
 
-/** `GET /assessments/:id`: the read-only return, every form question with its answer. */
+/** `GET /assessments/:id`: the read-only return, every form question with its answer (IMPORT_EXPORT: every question twice, IMPORT then EXPORT, each with its `direction`). */
 export const assessmentDetailResponse = historyRowResponse.extend({
-  /** IMPORT_EXPORT lists every question twice, IMPORT then EXPORT, each with its `direction`. */
-  answerMode: z.enum(ANSWER_MODES),
   survey: formSurveyResponse,
   answers: z.array(detailAnswerResponse),
   /** The section remarks in form order (sections without one are left out). */
