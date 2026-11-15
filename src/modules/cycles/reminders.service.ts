@@ -50,7 +50,7 @@ const MANUAL_REMINDER_COVERS_MS = 12 * 60 * 60 * 1000;
  * due (or since) counts as that one: nobody gets the same mail twice.
  */
 export function coveredByManualReminder(manualAt: Date | null | undefined, dueAt: string): boolean {
-  return manualAt != null && manualAt.getTime() >= new Date(dueAt).getTime() - MANUAL_REMINDER_COVERS_MS;
+  return manualAt !== null && manualAt !== undefined && manualAt.getTime() >= new Date(dueAt).getTime() - MANUAL_REMINDER_COVERS_MS;
 }
 
 /** One scheduler tick: every SAMPLING_OPEN cycle, every unlocked participant, `once()` per participant + reminder index. */
