@@ -275,6 +275,13 @@ describe('POST /cycles/:id/publish', () => {
   });
 
   it('publishes: snapshot per airport, survey versions pinned, participants planned, admins mailed, events emitted', async () => {
+    // A draft saved with a minimum of 0 before the API refused it cannot be published.
+    const { minSampleSize } = (await CycleModel.findById(cycle1).lean())!;
+    await CycleModel.updateOne({ _id: cycle1 }, { $set: { minSampleSize: 0 } });
+    const zero = expectError(await superAdmin.post(`${CYCLES}/${cycle1}/publish`), 412, 'PRECONDITION_FAILED');
+    expect(zero.message).toBe('The minimum sample is at least 1 customer; set it before publishing');
+    await CycleModel.updateOne({ _id: cycle1 }, { $set: { minSampleSize } });
+
     const res = await superAdmin.post(`${CYCLES}/${cycle1}/publish`);
     expect(res.status).toBe(200);
     const cycle = res.body.data;
