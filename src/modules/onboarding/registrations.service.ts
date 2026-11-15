@@ -14,8 +14,9 @@ import { ensureMembership, listActiveUserIdsInOrg, listMembershipsForUsers } fro
 import { requireRoleByCode } from '../identity/roles.service.js';
 import { findOrCreateInvitedUser, findUserById } from '../identity/users.service.js';
 import { send } from '../notifications/notifications.service.js';
-import { getMarketShare, setCurrentShare } from '../organisations/market-share.service.js';
+import { auditShareChange, getMarketShare, roundShare } from '../organisations/market-share.service.js';
 import { ACFI_ORG, createOrganisation, findOrganisationByCode } from '../organisations/organisations.service.js';
+import { activeOperatorShares, applyJoiningShares, planJoiningShares, type JoiningSharePlan } from '../organisations/share-join.service.js';
 
 import { findLinkByToken } from './links.service.js';
 import { OnboardingLinkModel, type OnboardingOrgType } from './onboarding-links.model.js';
@@ -73,24 +74,29 @@ async function toRegistrationDtos(docs: RegistrationDoc[]): Promise<Registration
   });
 }
 
-/** Adds the airport's current share set so the reviewer sees whether approving breaks 100. */
+/**
+ * Adds the airport's current share set and its ACTIVE operators, so the
+ * reviewer sees whether approving as requested keeps the airport at 100 and
+ * can rebalance the others in the same approval.
+ */
 async function withMarketShare(ctx: RequestContext, doc: RegistrationDoc): Promise<RegistrationDetailDto> {
   const dto = (await toRegistrationDtos([doc]))[0] as RegistrationDto;
   if (doc.orgType !== 'ACO') return { ...dto, marketShare: null };
-  const current = await getMarketShare(ctx, idString(doc.airportId), null);
-  const requested = doc.status === 'SUBMITTED' ? (doc.marketSharePct ?? 0) : 0;
-  const projectedTotal = Math.round((current.total + requested) * 100) / 100;
-  return { ...dto, marketShare: { entries: current.entries, total: current.total, projectedTotal } };
+  const [current, operators] = await Promise.all([getMarketShare(ctx, idString(doc.airportId), null), activeOperatorShares(doc.airportId)]);
+  const projectedTotal =
+    doc.status === 'SUBMITTED' ? roundShare(operators.reduce((sum, operator) => sum + operator.sharePct, 0) + (doc.marketSharePct ?? 0)) : current.total;
+  return { ...dto, marketShare: { entries: current.entries, total: current.total, projectedTotal, operators } };
 }
 
 // --- public submission -----------------------------------------------------
 
-function assertShareAllowed(orgType: OnboardingOrgType, marketSharePct: number | undefined): void {
-  if (orgType !== 'ACO' && marketSharePct !== undefined) {
-    throw new AppError('VALIDATION', 'Market share applies to operator (ACO) registrations only', {
-      issues: [{ path: 'marketSharePct', message: 'not allowed for an AIRPORT registration' }],
-    });
-  }
+function assertShareAllowed(orgType: OnboardingOrgType, input: { marketSharePct?: number | undefined; shares?: unknown }): void {
+  if (orgType === 'ACO') return;
+  const fields = (['marketSharePct', 'shares'] as const).filter((field) => input[field] !== undefined);
+  if (fields.length === 0) return;
+  throw new AppError('VALIDATION', 'Market share applies to operator (ACO) registrations only', {
+    issues: fields.map((field) => ({ path: field, message: 'not allowed for an AIRPORT registration' })),
+  });
 }
 
 /** ACFI members whose role carries `onboarding.review`: the people who will act on a submission. */
@@ -143,7 +149,7 @@ export async function submitRegistration(
 ): Promise<RegistrationSubmittedDto> {
   const link = await findLinkByToken(token);
   if (link.usedAt) throw new AppError('CONFLICT', 'This onboarding link has already been used');
-  assertShareAllowed(link.orgType, input.marketSharePct);
+  assertShareAllowed(link.orgType, input);
   const airport = await findAirportById(link.airportId);
   if (!airport) throw new AppError('PRECONDITION_FAILED', 'The airport on this link no longer exists');
 
@@ -236,16 +242,32 @@ function assertReviewable(doc: RegistrationDoc): void {
 }
 
 /**
+ * For an operator, the airport's whole current set after approving: the
+ * reviewer's share for the new operator (else the requested one) and the
+ * others' shares (else their current ones), totalling 100.
+ */
+async function planApprovalShares(registration: RegistrationDoc, input: ApproveRegistrationInput): Promise<JoiningSharePlan | null> {
+  if (registration.orgType !== 'ACO') return null;
+  return planJoiningShares({
+    airportId: idString(registration.airportId),
+    code: input.code,
+    sharePct: input.marketSharePct ?? registration.marketSharePct ?? undefined,
+    others: input.shares,
+  });
+}
+
+/**
  * POST /registrations/:id/approve. One transaction creates the ACTIVE
  * organisation (createdVia LINK), the INVITED admin user (or reuses the
- * account), the admin membership and, for an operator, the current market
- * share; the registration flips to APPROVED under a status guard so a
- * concurrent second approval aborts the whole transaction with 409.
+ * account), the admin membership and, for an operator, the airport's current
+ * market-share set with the new operator in it (audited as
+ * `marketshare.updated`); the registration flips to APPROVED under a status
+ * guard so a concurrent second approval aborts the whole transaction with 409.
  */
 export async function approveRegistration(ctx: RequestContext, id: string, input: ApproveRegistrationInput): Promise<RegistrationDetailDto> {
   const registration = await requireRegistration(ctx, id);
   assertReviewable(registration);
-  assertShareAllowed(registration.orgType, input.marketSharePct);
+  assertShareAllowed(registration.orgType, input);
   const airport = await findAirportById(registration.airportId);
   if (!airport) throw new AppError('PRECONDITION_FAILED', 'The airport on this registration no longer exists');
   if (await findOrganisationByCode(input.code)) throw new AppError('CONFLICT', `Organisation code ${input.code} already exists`);
@@ -253,9 +275,9 @@ export async function approveRegistration(ctx: RequestContext, id: string, input
   const adminRole = await requireRoleByCode(roleCode).catch(() => {
     throw new AppError('PRECONDITION_FAILED', `The ${roleCode} role is not seeded; run npm run seed`);
   });
-  const sharePct = registration.orgType === 'ACO' ? (input.marketSharePct ?? registration.marketSharePct ?? undefined) : undefined;
+  const plan = await planApprovalShares(registration, input);
 
-  const { org, admin } = await withTransaction(async (session) => {
+  const { org, admin, shareChange } = await withTransaction(async (session) => {
     const created = await createOrganisation(
       {
         type: registration.orgType,
@@ -274,16 +296,14 @@ export async function approveRegistration(ctx: RequestContext, id: string, input
     );
     const { user } = await findOrCreateInvitedUser(registration.admin, session);
     await ensureMembership({ userId: user._id, orgId: created._id, roleId: adminRole._id }, session);
-    if (sharePct !== undefined) {
-      await setCurrentShare({ airportId: airport._id, acoId: created._id, sharePct, setBy: toId(ctx.user.id) }, session);
-    }
+    const change = plan ? await applyJoiningShares(ctx, plan, created._id, session) : null;
     const approved = await RegistrationModel.updateOne(
       { _id: registration._id, status: 'SUBMITTED' },
       { $set: { status: 'APPROVED', reviewedBy: toId(ctx.user.id), reviewedAt: new Date(), reviewNote: input.note ?? null, resultOrgId: created._id } },
       { session },
     );
     if (approved.matchedCount === 0) throw new AppError('CONFLICT', 'Registration has already been reviewed');
-    return { org: created, admin: user };
+    return { org: created, admin: user, shareChange: change };
   });
 
   await send({
@@ -302,11 +322,12 @@ export async function approveRegistration(ctx: RequestContext, id: string, input
       status: 'APPROVED',
       organisation: { id: idString(org._id), code: org.code, name: org.name, type: org.type },
       admin: { id: idString(admin._id), email: admin.email, roleCode },
-      marketSharePct: sharePct ?? null,
+      marketSharePct: plan?.sharePct ?? null,
       note: input.note ?? null,
     },
     orgId: idString(org._id),
   });
+  if (shareChange) await auditShareChange(ctx, shareChange);
   return dto;
 }
 

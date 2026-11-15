@@ -14,7 +14,7 @@ import { idString, toId } from '../../core/ids.js';
 import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportsByIds } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
-import { getMarketShare, putMarketShare, SHARE_TOLERANCE } from '../organisations/market-share.service.js';
+import { getMarketShare, putMarketShare, totalsHundred } from '../organisations/market-share.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { getSettingsDoc, type DEFAULT_SETTINGS } from '../settings/settings.service.js';
@@ -427,7 +427,7 @@ async function assertMarketSharesComplete(ctx: RequestContext, cycle: CycleDoc):
   const snapshots: ShareSnapshot[] = [];
   for (const airportId of cycle.participatingAirportIds.map(idString)) {
     const share = await getMarketShare(ctx, airportId, null);
-    if (Math.abs(share.total - 100) > SHARE_TOLERANCE) {
+    if (!totalsHundred(share.total)) {
       const airport = airports.get(airportId);
       throw new AppError(
         'PRECONDITION_FAILED',

@@ -221,7 +221,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     ]);
   });
 
-  it('03 · ACFI reviews the request with DEL’s share total in view and approves it: organisation ACTIVE, admin INVITED', async () => {
+  it('03 · ACFI reviews the request with DEL’s share total in view and approves it at 100 %, DEL’s only operator: organisation ACTIVE, admin INVITED', async () => {
     const pending = await superAdmin.get(`${API}/registrations?status=SUBMITTED`);
     expect((pending.body.data as { id: string }[]).map((row) => row.id)).toEqual([registrationId]);
     const detail = await superAdmin.get(`${API}/registrations/${registrationId}`);
@@ -229,18 +229,22 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       status: 'SUBMITTED',
       airport: { iata: 'DEL' },
       marketSharePct: 60,
-      marketShare: { entries: [], total: 0, projectedTotal: 60 },
+      marketShare: { entries: [], total: 0, projectedTotal: 60, operators: [] },
     });
 
-    const approved = await superAdmin.post(`${API}/registrations/${registrationId}/approve`).send({ code: 'DEL-DECCAN', note: 'Welcome aboard' });
+    // As requested, DEL would total 60: the approval is refused and nothing is created.
+    const short = expectError(await superAdmin.post(`${API}/registrations/${registrationId}/approve`).send({ code: 'DEL-DECCAN' }), 400, 'VALIDATION');
+    expect(short.details).toEqual({ issues: [{ path: 'marketSharePct', message: 'DEL-DECCAN is the only active operator at DEL, so its share must be 100 (got 60)' }] });
+
+    const approved = await superAdmin.post(`${API}/registrations/${registrationId}/approve`).send({ code: 'DEL-DECCAN', marketSharePct: 100, note: 'Welcome aboard' });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
-    expect(approved.body.data).toMatchObject({ status: 'APPROVED', reviewNote: 'Welcome aboard', marketShare: { total: 60, projectedTotal: 60 } });
+    expect(approved.body.data).toMatchObject({ status: 'APPROVED', reviewNote: 'Welcome aboard', marketShare: { total: 100, projectedTotal: 100 } });
     acoA = approved.body.data.resultOrgId;
     expectError(await superAdmin.post(`${API}/registrations/${registrationId}/approve`).send({ code: 'DEL-DECCAN' }), 409, 'CONFLICT');
 
     const operators = await superAdmin.get(`${API}/operators?airportId=${del}`);
     expect(operators.body.data).toEqual([
-      expect.objectContaining({ id: acoA, code: 'DEL-DECCAN', name: 'Deccan Cargo Handlers', status: 'ACTIVE', createdVia: 'LINK', memberCount: 1, customerCount: 0, currentShare: 60 }),
+      expect.objectContaining({ id: acoA, code: 'DEL-DECCAN', name: 'Deccan Cargo Handlers', status: 'ACTIVE', createdVia: 'LINK', memberCount: 1, customerCount: 0, currentShare: 100 }),
     ]);
     const users = await superAdmin.get(`${API}/users?q=arjun`);
     expect(users.body.data).toEqual([expect.objectContaining({ email: 'arjun@deccan.test', name: 'Arjun Reddy', status: 'INVITED' })]);
@@ -327,10 +331,22 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expectError(await adminA.get(`${API}/cycles/${cycleId}`), 404, 'NOT_FOUND');
   });
 
-  it('07 · publishing is refused while DEL’s shares total 60; at 100 the cycle opens sampling at once', async () => {
+  it('07 · publishing is refused while an airport without operators (shares total 0) takes part; without it the cycle opens sampling at once', async () => {
+    const hyd = await airportIdByIata('HYD');
+    const totals = await superAdmin.get(`${API}/market-share/totals?airportIds=${del},${bom},${hyd}`);
+    expect(totals.body.data).toEqual([
+      { airportId: del, total: 100, entries: 1 },
+      { airportId: bom, total: 100, entries: 1 },
+      { airportId: hyd, total: 0, entries: 0 },
+    ]);
+    const widened = await superAdmin.patch(`${API}/cycles/${cycleId}`).send({ participatingAirportIds: [del, bom, hyd] });
+    expect(widened.status, JSON.stringify(widened.body)).toBe(200);
     const refused = expectError(await superAdmin.post(`${API}/cycles/${cycleId}/publish`), 412, 'PRECONDITION_FAILED');
-    expect(refused.message).toContain('DEL');
-    expect(refused.details).toMatchObject({ airportId: del, iata: 'DEL', total: 60 });
+    expect(refused.message).toContain('HYD');
+    expect(refused.details).toMatchObject({ airportId: hyd, iata: 'HYD', total: 0 });
+    // The refused publish leaves the draft as it was.
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}`)).body.data).toMatchObject({ status: 'DRAFT', participatingAirportIds: [del, bom, hyd] });
+    expect((await superAdmin.patch(`${API}/cycles/${cycleId}`).send({ participatingAirportIds: [del, bom] })).status).toBe(200);
 
     const shares = await superAdmin.put(`${API}/airports/${del}/market-share`).send({ entries: [{ acoId: acoA, sharePct: 100 }] });
     expect(shares.status, JSON.stringify(shares.body)).toBe(200);
@@ -844,9 +860,9 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       'onboarding.link.created',
       'registration.submitted',
       'registration.approved',
+      'marketshare.updated',
       'operator.created',
       'cycle.created',
-      'marketshare.updated',
       'cycle.published',
       'customer.imported',
       'sample.selection.changed',

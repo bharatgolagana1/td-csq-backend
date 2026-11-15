@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { idSchema } from '../../core/ids.js';
 import { listQuerySchema } from '../../core/pagination.js';
 import { emailSchema } from '../identity/identity.schemas.js';
-import { addressSchema, contactSchema, operationsSchema, orgCodeSchema } from '../organisations/organisations.schemas.js';
+import { addressSchema, contactSchema, joiningSharesSchema, operationsSchema, orgCodeSchema } from '../organisations/organisations.schemas.js';
 
 import { ONBOARDING_ORG_TYPES } from './onboarding-links.model.js';
 import { REGISTRATION_STATUSES } from './registrations.model.js';
@@ -119,17 +119,23 @@ export const registrationResponse = z.object({
 });
 export type RegistrationDto = z.infer<typeof registrationResponse>;
 
+const shareEntry = z.object({ acoId: z.string(), code: z.string(), name: z.string(), sharePct: z.number() });
+
 /**
  * The airport's current market-share set, so the reviewer sees whether the
- * requested share fits: `projectedTotal` is the total after approving a
- * SUBMITTED registration as requested (and simply the total once reviewed).
- * Null for AIRPORT registrations, which carry no share.
+ * requested share fits. `operators` are the operators ACTIVE at the airport
+ * with their current share (0 when unset): the rows an approval rebalances
+ * (`shares`). `projectedTotal` is the total after approving a SUBMITTED
+ * registration as requested with the others unchanged (Σ `operators` +
+ * requested), and simply the total once reviewed. Null for AIRPORT
+ * registrations, which carry no share.
  */
 export const marketShareReview = z
   .object({
-    entries: z.array(z.object({ acoId: z.string(), code: z.string(), name: z.string(), sharePct: z.number() })),
+    entries: z.array(shareEntry),
     total: z.number(),
     projectedTotal: z.number(),
+    operators: z.array(shareEntry),
   })
   .nullable();
 
@@ -146,8 +152,10 @@ export type RegistrationListQuery = z.infer<typeof registrationListQuery>;
 export const approveRegistrationBody = z
   .object({
     code: orgCodeSchema,
-    /** Overrides the requested share (ACO only); omitted ⇒ the requested value, if any. */
+    /** The new operator's share (ACO only); omitted ⇒ the requested value, else 0. */
     marketSharePct: z.number().min(0).max(100).optional(),
+    /** ACO only: every operator already ACTIVE at the airport with its new share; omitted keeps their current shares. With the new one they must total 100. */
+    shares: joiningSharesSchema.optional(),
     note: z.string().trim().max(500).optional(),
   })
   .strict();

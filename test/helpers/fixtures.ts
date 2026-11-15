@@ -76,7 +76,7 @@ export async function revokeTasks(roleCode: string, taskCodes: string[]): Promis
   await bumpRbacVersion();
 }
 
-/** A valid POST /operators body. */
+/** A valid POST /operators body; the share fits an airport without other active operators (it must be 100 there). */
 export function operatorPayload(airportId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     code: 'DEL-CARGO',
@@ -87,7 +87,7 @@ export function operatorPayload(airportId: string, overrides: Record<string, unk
     address: { line1: 'Cargo Terminal 2', line2: null, city: 'New Delhi', state: 'Delhi', pincode: '110037' },
     contact: { name: 'Ops Desk', email: 'ops@delcargo.test', phone: '+91 11 2565 0000' },
     admin: { name: 'Asha Rao', email: 'asha.rao@delcargo.test', phone: '+91 98100 00000' },
-    marketSharePct: 60,
+    marketSharePct: 100,
     ...overrides,
   };
 }

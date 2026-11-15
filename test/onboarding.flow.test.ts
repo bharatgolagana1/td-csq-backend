@@ -59,7 +59,7 @@ describe('link → form → review → approve → first sign-in', () => {
     const pending = await superAdmin.get('/api/v1/registrations?status=SUBMITTED');
     expect((pending.body.data as { id: string }[]).map((r) => r.id)).toEqual([registrationId]);
     const detail = await superAdmin.get(`/api/v1/registrations/${registrationId}`);
-    expect(detail.body.data.marketShare).toEqual({ entries: [], total: 0, projectedTotal: 100 });
+    expect(detail.body.data.marketShare).toEqual({ entries: [], total: 0, projectedTotal: 100, operators: [] });
 
     const approved = await superAdmin.post(`/api/v1/registrations/${registrationId}/approve`).send({ code: 'HYD-DECCAN' });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
