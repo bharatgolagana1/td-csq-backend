@@ -4,6 +4,8 @@ import type { Template } from './types.js';
 export interface AssessmentOtpVars {
   contactName: string;
   operatorName: string;
+  /** "Domestic" or "International": the code opens that survey's link only. */
+  surveyType: string;
   otp: string;
   expiresInMinutes: number;
 }
@@ -11,10 +13,10 @@ export interface AssessmentOtpVars {
 /** REQUIREMENTS §16: OTP / passwordless access to the assessment link. */
 export const assessmentOtp: Template<AssessmentOtpVars> = {
   render(vars, common) {
-    const subject = `${vars.otp} is your ${common.brandName} CSQ code`;
+    const subject = `${vars.otp} is your ${common.brandName} CSQ code · ${vars.surveyType} survey`;
     const lines = [
       `Dear ${vars.contactName},`,
-      `Use this code to open the ${vars.operatorName} assessment. It is valid for ${vars.expiresInMinutes} minutes.`,
+      `Use this code to open your assessment of the ${vars.surveyType.toLowerCase()} cargo services of ${vars.operatorName}. It is valid for ${vars.expiresInMinutes} minutes.`,
     ];
     const footer = ['If you did not request this code you can ignore this e-mail.'];
     return {

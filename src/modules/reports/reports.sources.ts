@@ -1,14 +1,15 @@
 // Everything reports reads from the lower features, in the shapes the report
 // builders consume. This is the only file in the module that imports another
-// feature's service (WAVE1-BRIEF §2: cycles, assessments, scoring, surveys,
-// organisations, airports); the builders never see a lower DTO, so a change in
+// feature's service (WAVE1-BRIEF §2: cycles, invitations, assessments, scoring,
+// surveys, organisations, airports); the builders never see a lower DTO, so a change in
 // one of those contracts is absorbed here.
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString } from '../../core/ids.js';
-import { findAirportById, findAirportsByIds, listAirports } from '../airports/airports.service.js';
+import { findAirportById, findAirportsByIds } from '../airports/airports.service.js';
 import { listSubmitted } from '../assessments/assessments.service.js';
 import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
+import { countPendingInvitations } from '../invitations/invitations.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { OVERALL_REF_ID, type DistributionBucket, type Rating } from '../scoring/engine/index.js';
@@ -379,12 +380,13 @@ export async function loadSubmittedAssessmentCounts(cycleId: string, acoId: stri
   return { total: docs.length, customer: docs.length - self, self };
 }
 
-// --- organisations and airports -------------------------------------------
-
-/** Airports live on the platform (`active`), whichever of them took part in a cycle. */
-export async function countActiveAirports(): Promise<number> {
-  return (await listAirports({ page: 1, pageSize: 1, active: true })).meta.total;
+/** Invitations prepared at lock and not sent yet (they go out when the assessment window opens), for one operator or the whole cycle. */
+export async function loadReadyToSend(cycleId: string, acoId?: string): Promise<number> {
+  const rows = await countPendingInvitations([cycleId], { acoId });
+  return rows.reduce((sum, row) => sum + row.count, 0);
 }
+
+// --- organisations and airports -------------------------------------------
 
 function toOperatorView(doc: OrganisationDoc): OperatorView {
   return {

@@ -1,5 +1,6 @@
 // `GET /cycles/:id/monitoring` (REQUIREMENTS §24): sampling and assessment
-// totals composed from cycle_participants, then Airport → ACO drill-down.
+// totals composed from cycle_participants (plus the invitations still waiting
+// for the assessment window), then Airport → ACO drill-down.
 // Scoped like participants: PLATFORM everything, AIRPORT its airport, ACO itself.
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString } from '../../core/ids.js';
@@ -10,6 +11,7 @@ import type { CycleParticipantDoc } from './cycle-participants.model.js';
 import type { MonitoringDto } from './cycles.schemas.js';
 import { requireVisibleCycle } from './cycles.service.js';
 import { listParticipantDocs, participantScopeFilter } from './participants.service.js';
+import { pendingInvitationsByOperator, pendingScopeOf } from './pending-invitations.service.js';
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
@@ -17,7 +19,8 @@ function sum(values: number[]): number {
 
 export async function getMonitoring(ctx: RequestContext, cycleId: string): Promise<MonitoringDto> {
   const cycle = await requireVisibleCycle(ctx, cycleId);
-  const participants = await listParticipantDocs(cycle._id, participantScopeFilter(ctx));
+  const scope = participantScopeFilter(ctx);
+  const [participants, readyToSend] = await Promise.all([listParticipantDocs(cycle._id, scope), pendingInvitationsByOperator(idString(cycle._id), pendingScopeOf(scope))]);
   const airportIds =
     ctx.scope.kind === 'PLATFORM'
       ? cycle.participatingAirportIds.map(idString)
@@ -29,6 +32,7 @@ export async function getMonitoring(ctx: RequestContext, cycleId: string): Promi
 
   const locked = participants.filter((participant) => participant.sampling.status === 'LOCKED');
   const invited = sum(participants.map((participant) => participant.stats.invited));
+  const readyToSendOf = (participant: CycleParticipantDoc) => readyToSend.get(idString(participant.acoId)) ?? 0;
   const started = sum(participants.map((participant) => participant.stats.started));
   const completed = sum(participants.map((participant) => participant.stats.completed));
 
@@ -51,6 +55,7 @@ export async function getMonitoring(ctx: RequestContext, cycleId: string): Promi
             required: participant.requiredSampleSize,
           },
           invited: participant.stats.invited,
+          readyToSend: readyToSendOf(participant),
           started: participant.stats.started,
           completed: participant.stats.completed,
         };
@@ -70,6 +75,7 @@ export async function getMonitoring(ctx: RequestContext, cycleId: string): Promi
     },
     assessment: {
       invited,
+      readyToSend: sum(participants.map(readyToSendOf)),
       started,
       completed,
       pending: Math.max(0, invited - completed),

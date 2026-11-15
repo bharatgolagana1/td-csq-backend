@@ -82,29 +82,19 @@ export const feedbackBucket = z.object({
 });
 
 export const assessorStats = z.object({
+  /** Invitation e-mails sent. */
   total: z.number(),
   completed: z.number(),
   inProgress: z.number(),
   yetToStart: z.number(),
+  /** Invitations prepared at lock and not sent yet: they go out when the assessment window opens. */
+  readyToSend: z.number(),
 });
 export type AssessorStatsDto = z.infer<typeof assessorStats>;
 
 /** SUBMITTED assessments behind the report: customers plus the operator's own self-assessment. */
 export const assessmentCounts = z.object({ total: z.number(), customer: z.number(), self: z.number() });
 export type AssessmentCountsDto = z.infer<typeof assessmentCounts>;
-
-/** What an operator sees of the country: airport ratings and ranks, never another operator's figures. */
-export const nationalTableRow = z.object({
-  airportIata: z.string(),
-  airportName: z.string(),
-  rating: mean,
-  rank: z.number().nullable(),
-  /** Airports with a figure in this table. */
-  rankOf: z.number(),
-  /** True on the airport the operator works at. */
-  isOwn: z.boolean(),
-});
-export type NationalTableRowDto = z.infer<typeof nationalTableRow>;
 
 // --- GET /reports/operator/:acoId ------------------------------------------
 
@@ -136,9 +126,6 @@ export const operatorReportResponse = z.object({
   byStakeholder: z.object({ FF: meanWithN, CB: meanWithN }),
   assessorStats,
   assessments: assessmentCounts,
-  nationalTable: z.array(nationalTableRow),
-  /** Airports live on the platform (active, i.e. Phase I), whether or not they are in the table. */
-  airportsTotal: z.number(),
 });
 export type OperatorReportDto = z.infer<typeof operatorReportResponse>;
 
@@ -243,7 +230,10 @@ export const nationalReportResponse = z.object({
     airports: z.number(),
     operators: z.number(),
     sampleLocked: z.number(),
+    /** Invitation e-mails sent. */
     invited: z.number(),
+    /** Invitations prepared at lock, sent when the assessment window opens. */
+    readyToSend: z.number(),
     started: z.number(),
     completed: z.number(),
     pending: z.number(),

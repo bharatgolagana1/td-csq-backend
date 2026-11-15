@@ -1,8 +1,9 @@
 // The operator dashboard (ARCHITECTURE §6 `GET /reports/operator/:acoId`) and
 // its question-level table. Composes the scoring module's rows (keyed by the
-// survey node's code) with the survey tree the cycle pinned, the participant's
-// assessment funnel and the national airport table; never another operator's
-// figures. Every figure is in the selection's direction (SINGLE, IMPORT or EXPORT).
+// survey node's code) with the survey tree the cycle pinned and the
+// participant's assessment funnel; never another operator's figures, and no
+// airport ranking (that is the national report's). Every figure is in the
+// selection's direction (SINGLE, IMPORT or EXPORT).
 import type { RequestContext } from '../../core/auth/session.js';
 import { feedbackDistribution } from '../scoring/engine/index.js';
 
@@ -20,20 +21,16 @@ import {
 import type {
   AssessorStatsDto,
   CategoryReportDto,
-  NationalTableRowDto,
   OperatorQuestionsDto,
   OperatorReportDto,
   OperatorReportQuery,
   QuestionReportRowDto,
-  ReportDirection,
-  SurveyType,
 } from './reports.schemas.js';
 import { selectOperatorCycle, type OperatorSelection } from './reports.selection.js';
 import {
-  countActiveAirports,
   loadAirport,
   loadCycle,
-  loadNationalTable,
+  loadReadyToSend,
   loadScores,
   loadSubmittedAssessmentCounts,
   loadSubmittedCustomerAssessments,
@@ -93,9 +90,11 @@ function categoriesOf(tree: SurveyTreeView, rows: Map<string, ScoreRowView>): Ca
 /**
  * `started` counts every assessment opened, finished ones included. A completed
  * assessment was necessarily begun, so `begun` never trails `completed` even
- * when the opener was not counted; the funnel never goes negative.
+ * when the opener was not counted; the funnel never goes negative. `total`
+ * counts the invitations e-mailed; `readyToSend` those prepared at lock that
+ * wait for the assessment window.
  */
-function assessorStatsOf(participant: ParticipantView): AssessorStatsDto {
+function assessorStatsOf(participant: ParticipantView, readyToSend: number): AssessorStatsDto {
   const { invited, started, completed } = participant.stats;
   const begun = Math.max(started, completed);
   return {
@@ -103,32 +102,13 @@ function assessorStatsOf(participant: ParticipantView): AssessorStatsDto {
     completed,
     inProgress: begun - completed,
     yetToStart: Math.max(0, invited - begun),
+    readyToSend,
   };
 }
 
 /** The distribution the scoring run stored; the six empty buckets before the operator has been scored. */
 function distributionOf(scores: ScoreSetView): OperatorReportDto['feedbackDistribution'] {
   return scores.distribution.length > 0 ? scores.distribution : feedbackDistribution([]);
-}
-
-/** The scoring module's national table, best first, with the operator's own airport flagged. */
-async function nationalTableOf(
-  cycleId: string,
-  surveyType: SurveyType,
-  direction: ReportDirection,
-  ownAirportId: string | null,
-): Promise<NationalTableRowDto[]> {
-  const rows = await loadNationalTable(cycleId, surveyType, direction);
-  return rows
-    .map((row) => ({
-      airportIata: row.iata,
-      airportName: row.name,
-      rating: round2(row.mean),
-      rank: row.rank,
-      rankOf: row.rankOf,
-      isOwn: ownAirportId !== null && row.airportId === ownAirportId,
-    }))
-    .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.airportIata.localeCompare(b.airportIata));
 }
 
 async function comparisonOf(
@@ -161,12 +141,11 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
   const { cycle, participant, surveyType, direction, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
-  const [airport, nationalTable, comparison, assessments, airportsTotal] = await Promise.all([
+  const [airport, comparison, assessments, readyToSend] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    nationalTableOf(cycle.id, surveyType, direction, operator.airportId),
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
-    countActiveAirports(),
+    loadReadyToSend(cycle.id, operator.id),
   ]);
 
   return {
@@ -186,10 +165,8 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
     feedbackDistribution: distributionOf(scores),
     categories: categoriesOf(tree, rows),
     byStakeholder: byTypeOf(overall),
-    assessorStats: assessorStatsOf(participant),
+    assessorStats: assessorStatsOf(participant, readyToSend),
     assessments,
-    nationalTable,
-    airportsTotal,
   };
 }
 

@@ -15,7 +15,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { logger } from '../../src/core/logger.js';
 import { cyclesTransitions } from '../../src/jobs/cycles.jobs.js';
-import { PHASE_I_IATA } from '../../src/modules/airports/airports.regions.js';
 import { CUSTOMER_CSV_HEADERS } from '../../src/modules/customers/domain/csvTemplate.js';
 import { addCalendarDays } from '../../src/modules/cycles/domain/derive.js';
 import { localDateOf, toInstant } from '../../src/modules/cycles/domain/windows.js';
@@ -484,6 +483,14 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expect(locked.body.data).toEqual([expect.objectContaining({ acoId: acoA, sampling: expect.objectContaining({ status: 'LOCKED', selectedCount: 3 }) })]);
     const monitoring = await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`);
     expect(monitoring.body.data.sampling).toMatchObject({ airports: 2, operators: 2, sampleLocked: 3, lockedOperators: 1 });
+    // Nothing is e-mailed before the assessment window opens: the three invitations are ready to send.
+    expect(monitoring.body.data.assessment).toMatchObject({ invited: 0, readyToSend: 3 });
+    expect(monitoring.body.data.byAirport.flatMap((airport: { operators: { acoId: string; invited: number; readyToSend: number }[] }) => airport.operators.map((o) => [o.acoId, o.invited, o.readyToSend]))).toEqual([
+      [acoA, 0, 3],
+      [acoB, 0, 0],
+    ]);
+    expect((await superAdmin.get(`${API}/cycles?q=CSQ-DEMO-2026`)).body.data[0].progress).toEqual({ locked: 1, invited: 0, readyToSend: 3, completed: 0 });
+    expect((await adminA.get(`${API}/cycles/current`)).body.data[0].cycle.progress).toMatchObject({ invited: 0, readyToSend: 3 });
     expect((await adminA.get(`${API}/cycles/current`)).body.data[0].nextDeadline).toEqual({ kind: 'ASSESSMENT_OPENS', at: assessmentStart.toISOString() });
     expect(recipientsOf(await mailLog(), 'sample-locked')).toEqual(['arjun@deccan.test']);
   });
@@ -524,7 +531,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       tokens.set(mail.to, match![1]!);
     }
     expect([...tokens.keys()].sort()).toEqual(['anita@alphaff.test', 'gita@gamma.test', 'rahul@bharatchb.test']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 0, completed: 0, pending: 3, completionRate: 0 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 0, completed: 0, pending: 3, completionRate: 0 });
   });
 
   it('13 · the clock sends the first assessment reminder two days in, with a fresh link each; the first link keeps working', async () => {
@@ -643,7 +650,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expect((await t.anon.get(`${PUBLIC}/${token}`)).body.data.state).toBe('SUBMITTED');
     expect((await adminA.get(`${API}/invitations?cycleId=${cycleId}&state=SUBMITTED`)).body.meta.total).toBe(1);
     expect(recipientsOf(await mailLog(), 'assessment-thank-you')).toEqual(['anita@alphaff.test']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 1, completed: 1, pending: 2, completionRate: 33.3 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 1, completed: 1, pending: 2, completionRate: 33.3 });
   });
 
   it('16 · the other two participants complete theirs through the same link flow; every invitation is SUBMITTED', async () => {
@@ -651,7 +658,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     await completeThroughLink('gita@gamma.test', 3, 'FF');
 
     expect((await adminA.get(`${API}/invitations?cycleId=${cycleId}`)).body.data.map((row: { state: string }) => row.state)).toEqual(['SUBMITTED', 'SUBMITTED', 'SUBMITTED']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 3, completed: 3, pending: 0, completionRate: 100 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 3, completed: 3, pending: 0, completionRate: 100 });
 
     // The operator's history: masked assessors, and the NA-excluding score of each submission once the
     // operator's role is granted assessments.scores (not an operator default).
@@ -728,7 +735,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expectError(await adminA.post(`${API}/scoring/cycles/${cycleId}/run`).send({}), 403, 'FORBIDDEN');
   });
 
-  it('19 · the operator dashboard: figures, assessment counts, the funnel, its own airport in the national table — and nothing of the other operator', async () => {
+  it('19 · the operator dashboard: figures, assessment counts, the funnel, no airport ranking — and nothing of the other operator', async () => {
     const res = await adminA.get(`${API}/reports/operator/${acoA}`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const report = res.body.data;
@@ -741,10 +748,9 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       comparison: { current: { cycleId, cycleName: 'CSQ Demo 2026', customer: overallMean, self: 5 }, previous: null },
       // Two forwarders and one broker: each split is under `settings.scoring.minResponses` (3), so its mean stays hidden.
       byStakeholder: { FF: { mean: null, n: 2 }, CB: { mean: null, n: 1 } },
-      assessorStats: { total: 3, completed: 3, inProgress: 0, yetToStart: 0 },
+      assessorStats: { total: 3, completed: 3, inProgress: 0, yetToStart: 0, readyToSend: 0 },
       // "4 assessments · 1 self · 3 customer"
       assessments: { total: 4, customer: 3, self: 1 },
-      airportsTotal: PHASE_I_IATA.length,
     });
     expect(report.overall).not.toHaveProperty('suppressed');
     expect(report.cycle.scoredAt).not.toBeNull();
@@ -769,10 +775,9 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     ]);
     expect(categories[0]!.customer.mean).toBeLessThan(4);
     expect(categories.slice(1).map((category) => category.customer.mean)).toEqual([4, 4, 4]);
-    expect(report.nationalTable).toEqual([
-      { airportIata: 'DEL', airportName: 'Indira Gandhi International Airport', rating: overallMean, rank: 1, rankOf: 1, isOwn: true },
-      { airportIata: 'BOM', airportName: 'Chhatrapati Shivaji Maharaj International Airport', rating: null, rank: null, rankOf: 1, isOwn: false },
-    ]);
+    // The airport rankings are the national report's (ACFI): an operator's dashboard carries none.
+    expect(report).not.toHaveProperty('nationalTable');
+    expect(report).not.toHaveProperty('airportsTotal');
     expect(JSON.stringify(report)).not.toContain('Harbour');
     expect(JSON.stringify(report)).not.toContain(acoB);
 
@@ -797,10 +802,8 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       assessments: { total: 0, customer: 0, self: 0 },
       assessorStats: { total: 0, completed: 0, inProgress: 0, yetToStart: 0 },
     });
-    expect((own.body.data.nationalTable as { airportIata: string; isOwn: boolean }[]).map((row) => [row.airportIata, row.isOwn])).toEqual([
-      ['DEL', false],
-      ['BOM', true],
-    ]);
+    expect(own.body.data).not.toHaveProperty('nationalTable');
+    expect(JSON.stringify(own.body.data)).not.toContain('Deccan');
 
     const csv = await adminA.get(`${API}/reports/export?scope=operator&acoId=${acoA}`);
     expect(csv.status).toBe(200);

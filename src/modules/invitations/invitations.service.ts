@@ -2,7 +2,7 @@
 // "Cycle clock" and "Participant link"): PENDING at sample lock, SENT at
 // assessment open, reminders while open, EXPIRED at assessment end,
 // SUBMITTED on the assessment event, REVOKED on unlock or by an operator.
-import type { ClientSession, FilterQuery } from 'mongoose';
+import type { ClientSession, FilterQuery, Types } from 'mongoose';
 
 import type { RequestContext } from '../../core/auth/session.js';
 import { requestContextOf, systemContext, type AnyContext } from '../../core/auth/system.js';
@@ -366,7 +366,7 @@ async function sendReminder(invitation: InvitationDoc, cycle: CycleFacts, index:
   await send({
     template: 'assessment-reminder',
     to: updated.email,
-    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, assessmentEnd: mail.assessmentEnd, url: invitationLink(token), reminderNumber: index + 1 },
+    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, surveyType: mail.surveyType, assessmentEnd: mail.assessmentEnd, url: invitationLink(token), reminderNumber: index + 1 },
     refs: { cycleId: idString(updated.cycleId), acoId: idString(updated.acoId), customerId: idString(updated.customerId), invitationId: idString(updated._id) },
   });
 }
@@ -447,10 +447,36 @@ export async function completeInvitation(invitationId: string, options: HandlerO
   await send({
     template: 'assessment-thank-you',
     to: invitation.email,
-    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName },
+    vars: { contactName: mail.contactName, operatorName: mail.operatorName, cycleName: mail.cycleName, surveyType: mail.surveyType },
     refs: { cycleId: idString(invitation.cycleId), acoId: idString(invitation.acoId), customerId: idString(invitation.customerId), invitationId },
   });
   return invitation;
+}
+
+// --- counts ----------------------------------------------------------------------------
+
+export interface PendingInvitationCount {
+  cycleId: string;
+  acoId: string;
+  count: number;
+}
+
+/**
+ * PENDING invitations — prepared at lock, e-mailed when the assessment window
+ * opens — per cycle and operator, optionally for one operator or the operators
+ * at one airport. Cycles counts them as "ready to send"; reports beside the
+ * assessor funnel.
+ */
+export async function countPendingInvitations(cycleIds: readonly string[], scope: { acoId?: string | undefined; airportId?: string | undefined } = {}): Promise<PendingInvitationCount[]> {
+  if (cycleIds.length === 0) return [];
+  const filter: FilterQuery<InvitationDoc> = { cycleId: { $in: cycleIds.map((id) => toId(id, 'cycleId')) }, state: 'PENDING' };
+  if (scope.acoId !== undefined) filter.acoId = toId(scope.acoId, 'acoId');
+  if (scope.airportId !== undefined) filter.airportId = toId(scope.airportId, 'airportId');
+  const rows = await InvitationModel.aggregate<{ _id: { cycleId: Types.ObjectId; acoId: Types.ObjectId }; count: number }>([
+    { $match: filter },
+    { $group: { _id: { cycleId: '$cycleId', acoId: '$acoId' }, count: { $sum: 1 } } },
+  ]);
+  return rows.map((row) => ({ cycleId: idString(row._id.cycleId), acoId: idString(row._id.acoId), count: row.count }));
 }
 
 // --- signed-in: list, resend, revoke ---------------------------------------------------

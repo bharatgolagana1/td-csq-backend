@@ -274,7 +274,10 @@ describe('report direction', () => {
     const byDefault = await superAdmin.get(`${OPERATOR(acoA)}?cycleId=${split.id}`);
     expect(byDefault.body.data).toMatchObject({ direction: 'IMPORT', cycle: { answerMode: 'IMPORT_EXPORT' }, overall: { customer: { mean: 5 }, rank: 1 } });
     expect(byDefault.body.data.comparison.previous).toBeNull();
-    expect(byDefault.body.data.nationalTable.map((row: { airportIata: string; rating: number }) => [row.airportIata, row.rating])).toEqual([
+    // The airport ranking (the national report) defaults to IMPORT the same way.
+    const national = await superAdmin.get(`/api/v1/reports/national?cycleId=${split.id}`);
+    expect(national.body.data.direction).toBe('IMPORT');
+    expect(national.body.data.airports.map((row: { iata: string; rating: number }) => [row.iata, row.rating])).toEqual([
       ['DEL', 5],
       ['BOM', 3],
     ]);

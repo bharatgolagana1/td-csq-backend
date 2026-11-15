@@ -133,8 +133,12 @@ describe('seed:demo', () => {
     expect(report.assessorStats.completed).toBeGreaterThan(40);
     expect(report.assessorStats.inProgress).toBeGreaterThan(0);
     expect(report.feedbackDistribution.find((bucket: { label: string }) => bucket.label === 'Excellent').count).toBeGreaterThan(0);
-    expect(report.nationalTable).toHaveLength(10);
-    expect(report.nationalTable[0].rank).toBe(1);
+    // The airport ranking is ACFI's national report, not the operator dashboard.
+    expect(report).not.toHaveProperty('nationalTable');
+    const national = await superAdmin.get(`/api/v1/reports/national?cycleId=${report.cycle.id}`);
+    expect(national.status, JSON.stringify(national.body)).toBe(200);
+    expect(national.body.data.airports).toHaveLength(10);
+    expect(national.body.data.airports[0].rank).toBe(1);
   });
 
   it('gives every submitted assessment, customer and self, a remark on each of its four sections', async () => {

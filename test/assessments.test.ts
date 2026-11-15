@@ -9,6 +9,7 @@ import {
   getForm,
   getOrCreateForInvitation,
   getOrCreateSelf,
+  historySort,
   listSubmitted,
   patchAnswers,
   patchSectionRemarks,
@@ -463,6 +464,7 @@ describe('self assessment', () => {
       userId: idString(userA.user._id),
       status: 'DRAFT',
       progress: { answered: 0, total: 5, pct: 0 },
+      lastSavedAt: null,
     });
     expect(res.body.data).toMatchObject({ stakeholderType: null, questionCount: 5, answers: [], sectionRemarks: [], progress: { answered: 0, total: 5, pct: 0 } });
     expect(res.body.data.scale).toHaveLength(5);
@@ -492,6 +494,9 @@ describe('self assessment', () => {
     });
     expect(saved.status).toBe(200);
     expect(saved.body.data).toMatchObject({ answered: 3, total: 5, pct: 60 });
+    // Reopened, the self-assessment says when it was last saved.
+    expect(typeof saved.body.data.lastSavedAt).toBe('string');
+    expect((await userA.get(path())).body.data.assessment.lastSavedAt).toBe(saved.body.data.lastSavedAt);
 
     expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED');
     await userA.patch(`${path()}/answers`).send({
@@ -831,5 +836,73 @@ describe('history, masking, tenancy and export', () => {
         await revokeTasks('ACO_ADMIN', ['assessments.details']);
       }
     });
+  });
+});
+
+describe('history order', () => {
+  const MINUTE = 60_000;
+  let order: TestCycle;
+  const ids: Record<string, string> = {};
+
+  /** One customer assessment of ACO-A in the order cycle, its dates set as given. */
+  async function assessmentAt(name: string, at: { submittedAt?: Date; lastSavedAt?: Date | null }): Promise<void> {
+    const created = await getOrCreateForInvitation(invitation(ffCustomerA, idString(adminA.org._id), 'DOMESTIC', order.id));
+    ids[name] = created.id;
+    await AssessmentModel.updateOne(
+      { _id: toId(created.id) },
+      { $set: { status: at.submittedAt ? 'SUBMITTED' : 'DRAFT', submittedAt: at.submittedAt ?? null, lastSavedAt: at.lastSavedAt ?? null } },
+    );
+  }
+
+  const names = (rows: { id: string }[]) => rows.map((row) => Object.keys(ids).find((name) => ids[name] === row.id));
+
+  beforeAll(async () => {
+    order = await createTestCycle({
+      code: 'ORDER-2026',
+      status: 'ASSESSMENT_OPEN',
+      surveyVersions: { DOMESTIC: domestic.id, INTERNATIONAL: international.id },
+      participants: [{ org: adminA.org, surveyTypes: ['DOMESTIC', 'INTERNATIONAL'] }],
+    });
+    const now = Date.now();
+    // Created in this order, so _id order differs from the expected one.
+    await assessmentAt('submittedHourAgo', { submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 120 * MINUTE) });
+    await assessmentAt('draftSavedJustNow', { lastSavedAt: new Date(now - 5 * MINUTE) });
+    await assessmentAt('submittedLatest', { submittedAt: new Date(now - 10 * MINUTE), lastSavedAt: new Date(now - 11 * MINUTE) });
+    await assessmentAt('draftNeverSaved', { lastSavedAt: null });
+    await assessmentAt('submittedHourAgoToo', { submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 90 * MINUTE) });
+    await assessmentAt('draftSavedEarlier', { lastSavedAt: new Date(now - 30 * MINUTE) });
+  });
+
+  it('lists the newest submission first by default, then the drafts by their latest save, and carries each row’s last save', async () => {
+    const res = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}`);
+    expect(res.status).toBe(200);
+    expect(names(res.body.data)).toEqual(['submittedLatest', 'submittedHourAgoToo', 'submittedHourAgo', 'draftSavedJustNow', 'draftSavedEarlier', 'draftNeverSaved']);
+    const draft = (res.body.data as { id: string; lastSavedAt: string | null; submittedAt: string | null; answerMode: string }[]).find((row) => row.id === ids['draftSavedJustNow']);
+    expect(draft).toMatchObject({ submittedAt: null, answerMode: 'SINGLE' });
+    expect(draft?.lastSavedAt).toBe((await AssessmentModel.findById(ids['draftSavedJustNow']).lean())?.lastSavedAt?.toISOString());
+    expect((res.body.data as { id: string; lastSavedAt: string | null }[]).find((row) => row.id === ids['draftNeverSaved'])?.lastSavedAt).toBeNull();
+    // `sort=-submittedAt` is the same order.
+    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-submittedAt`)).body.data)).toEqual(names(res.body.data));
+  });
+
+  it('keeps the drafts after the submitted rows when sorted oldest submission first', async () => {
+    const res = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=submittedAt`);
+    expect(names(res.body.data)).toEqual(['submittedHourAgo', 'submittedHourAgoToo', 'submittedLatest', 'draftNeverSaved', 'draftSavedEarlier', 'draftSavedJustNow']);
+  });
+
+  it('pages through the same order without a row missing or repeated, and sorts by the last save on request', async () => {
+    const all = names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}`)).body.data);
+    const paged: (string | undefined)[] = [];
+    for (const page of [1, 2, 3]) paged.push(...names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&pageSize=2&page=${page}`)).body.data));
+    expect(paged).toEqual(all);
+    const bySave = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-lastSavedAt`);
+    expect(names(bySave.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo', 'draftNeverSaved']);
+  });
+
+  it('historySort puts the default order behind any requested key', () => {
+    expect(historySort({ submittedAt: -1 })).toEqual({ status: -1, submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 });
+    expect(Object.keys(historySort({ submittedAt: 1 }))).toEqual(['status', 'submittedAt', 'lastSavedAt', 'startedAt', '_id']);
+    expect(historySort({ submittedAt: 1 })).toMatchObject({ lastSavedAt: 1, startedAt: 1, _id: 1 });
+    expect(historySort({ kind: 1 })).toEqual({ kind: 1, submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 });
   });
 });

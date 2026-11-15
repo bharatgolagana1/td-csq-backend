@@ -39,6 +39,27 @@ describe('templates', () => {
     expect(renderTemplate('registration-received', { adminName: 'A', orgName: 'O', airportName: 'DEL' }, common).subject).toContain('Registration received');
     expect(renderTemplate('registration-approved', { adminName: 'A', orgName: 'O', orgCode: 'O1' }, common).text).toContain('(code O1)');
   });
+
+  it('name the survey in every participant e-mail, so a customer in both surveys of a cycle can tell them apart', () => {
+    const common = { brandName: 'ACFI', webUrl: 'https://csq.test' };
+    const facts = { contactName: 'Meera', customerName: 'Fast Freight', operatorName: 'Delhi Cargo', airportName: 'Delhi (DEL)', cycleName: 'CSQ 2026 H2', assessmentStart: '1 Nov 2026', assessmentEnd: '30 November 2026, 23:59 IST', url: 'https://csq.test/assess/t' };
+    const invitation = (surveyType: string) => renderTemplate('assessment-invitation', { ...facts, surveyType }, common);
+    expect(invitation('Domestic').subject).toBe('CSQ 2026 H2 · Domestic survey: please rate Delhi Cargo');
+    expect(invitation('International').subject).toBe('CSQ 2026 H2 · International survey: please rate Delhi Cargo');
+    expect(invitation('International').text).toContain('assess the international cargo services of Delhi Cargo at Delhi (DEL)');
+
+    const reminder = renderTemplate('assessment-reminder', { ...facts, surveyType: 'International', reminderNumber: 2 }, common);
+    expect(reminder.subject).toBe('CSQ 2026 H2 · International survey: reminder to rate Delhi Cargo by 30 November 2026, 23:59 IST');
+    expect(reminder.text).toContain('your assessment of the international cargo services of Delhi Cargo for the ACFI survey "CSQ 2026 H2" is still open');
+
+    const thanks = renderTemplate('assessment-thank-you', { contactName: 'Meera', operatorName: 'Delhi Cargo', cycleName: 'CSQ 2026 H2', surveyType: 'Domestic' }, common);
+    expect(thanks.subject).toBe('CSQ 2026 H2 · Domestic survey: thank you for rating Delhi Cargo');
+    expect(thanks.text).toContain('the domestic cargo services of Delhi Cargo');
+
+    const otp = renderTemplate('assessment-otp', { contactName: 'Meera', operatorName: 'Delhi Cargo', surveyType: 'Domestic', otp: '123456', expiresInMinutes: 10 }, common);
+    expect(otp.subject).toBe('123456 is your ACFI CSQ code · Domestic survey');
+    expect(otp.text).toContain('open your assessment of the domestic cargo services of Delhi Cargo');
+  });
 });
 
 describe('send()', () => {

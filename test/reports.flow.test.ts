@@ -328,11 +328,9 @@ describe('reports over the real cycle, survey and assessment documents', () => {
       overall: { customer: { mean: 4.25, n: 2 }, self: { mean: 4.5 }, rank: 1, rankOf: 1 },
       comparison: { current: { cycleId, customer: 4.25, self: 4.5 }, previous: null },
       byStakeholder: { FF: { mean: 4.25, n: 1 }, CB: { mean: 4.25, n: 1 } },
-      assessorStats: { total: 0, completed: 2, inProgress: 0, yetToStart: 0 },
+      assessorStats: { total: 0, completed: 2, inProgress: 0, yetToStart: 0, readyToSend: 0 },
       // Counted live from the real assessments module: two customers submitted, no self-assessment yet.
       assessments: { total: 2, customer: 2, self: 0 },
-      // The seeded Phase-I airports, whether or not they took part.
-      airportsTotal: 14,
     });
     expect(new Date(report.cycle.assessment.start).getTime()).toBeGreaterThan(Date.now());
     expect(report.feedbackDistribution).toEqual([
@@ -356,10 +354,8 @@ describe('reports over the real cycle, survey and assessment documents', () => {
       },
       { id: nodeIds.PROC, code: 'PROC', name: 'Processes', customer: { mean: 4.2, n: 2 }, self: { mean: null }, previous: null, delta: null, subcategories: [] },
     ]);
-    expect(report.nationalTable).toEqual([
-      { airportIata: 'DEL', airportName: 'Indira Gandhi International Airport', rating: 4.25, rank: 1, rankOf: 1, isOwn: true },
-      { airportIata: 'BOM', airportName: 'Chhatrapati Shivaji Maharaj International Airport', rating: null, rank: null, rankOf: 1, isOwn: false },
-    ]);
+    // No airport ranking on an operator's dashboard (the national report is ACFI's).
+    expect(report).not.toHaveProperty('nationalTable');
     expect(JSON.stringify(report)).not.toContain('Bravo');
   });
 
@@ -414,7 +410,7 @@ describe('reports over the real cycle, survey and assessment documents', () => {
     const res = await superAdmin.get('/api/v1/reports/national');
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data).toMatchObject({ cycle: { id: cycleId }, surveyType: 'DOMESTIC', provisional: true });
-    expect(res.body.data.participation).toEqual({ airports: 2, operators: 3, sampleLocked: 0, invited: 0, started: 0, completed: 3, pending: 0, completionRate: 0 });
+    expect(res.body.data.participation).toEqual({ airports: 2, operators: 3, sampleLocked: 0, invited: 0, readyToSend: 0, started: 0, completed: 3, pending: 0, completionRate: 0 });
     expect((res.body.data.operators as { code: string; rating: number | null; rank: number | null }[]).map((o) => [o.code, o.rating, o.rank])).toEqual([
       ['RPTF-A', 4.25, 1],
       ['RPTF-B', null, null],

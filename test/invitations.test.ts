@@ -15,6 +15,7 @@ import { InvitationModel, type InvitationDoc } from '../src/modules/invitations/
 import {
   activateCycle,
   activateOpenCycles,
+  countPendingInvitations,
   createPendingForSamples,
   expireDue,
   getByToken,
@@ -172,6 +173,36 @@ describe('sample.unlocked → PENDING invitations revoked', () => {
   });
 });
 
+describe('countPendingInvitations', () => {
+  it('counts the PENDING invitations per cycle and operator, for everyone, one operator or one airport', async () => {
+    const byOperator = (rows: { acoId: string; count: number }[]) => Object.fromEntries(rows.map((row) => [row.acoId, row.count]));
+    const all = await countPendingInvitations([cycleId]);
+    expect(all.every((row) => row.cycleId === cycleId)).toBe(true);
+    expect(byOperator(all)).toEqual({ [acoA]: 3, [acoB]: 1 });
+    expect(byOperator(await countPendingInvitations([cycleId], { acoId: acoB }))).toEqual({ [acoB]: 1 });
+    expect(byOperator(await countPendingInvitations([cycleId], { airportId: del }))).toEqual({ [acoA]: 3 });
+    expect(await countPendingInvitations([idString(newId())])).toEqual([]);
+    expect(await countPendingInvitations([])).toEqual([]);
+  });
+
+  it('is what the cycle list and monitoring report as ready to send while nothing is e-mailed', async () => {
+    const monitoring = await superAdmin.get(`/api/v1/cycles/${cycleId}/monitoring`);
+    expect(monitoring.status, JSON.stringify(monitoring.body)).toBe(200);
+    expect(monitoring.body.data.assessment).toMatchObject({ invited: 0, readyToSend: 4 });
+    const operators = (monitoring.body.data.byAirport as { operators: { acoId: string; invited: number; readyToSend: number }[] }[]).flatMap((airport) => airport.operators);
+    expect(operators.map((o) => [o.acoId, o.invited, o.readyToSend])).toEqual([
+      [acoA, 0, 3],
+      [acoB, 0, 1],
+    ]);
+    const list = await superAdmin.get('/api/v1/cycles?q=INV-BOTH');
+    expect(list.body.data[0].progress).toMatchObject({ invited: 0, readyToSend: 4 });
+    // An operator sees its own.
+    await grantTasks('ACO_ADMIN', ['cycles.view', 'monitoring.view']);
+    expect((await adminB.get('/api/v1/cycles?q=INV-BOTH')).body.data[0].progress).toMatchObject({ readyToSend: 1 });
+    expect((await adminB.get(`/api/v1/cycles/${cycleId}/monitoring`)).body.data.assessment).toMatchObject({ readyToSend: 1 });
+  });
+});
+
 describe('activateCycle', () => {
   it('gives every PENDING invitation of a LOCKED participant a token, sends the e-mail, audits and announces invitation.sent', async () => {
     await lockParticipant(acoA);
@@ -189,6 +220,8 @@ describe('activateCycle', () => {
       expect(mails[0]!.status).toBe('SENT');
       expect(mails[0]!.body).toContain('http://localhost:5173/assess/');
       expect(mails[0]!.body).toContain('INV-A Cargo');
+      // The subject names the survey: a customer in both gets two invitations that tell apart.
+      expect(mails[0]!.subject).toBe(`Cycle INV-BOTH · ${doc.surveyType === 'DOMESTIC' ? 'Domestic' : 'International'} survey: please rate INV-A Cargo`);
       const token = await tokenFromMail(idString(doc._id));
       expect(hashToken(token)).toBe(doc.tokenHash);
       const audit = await AuditModel.findOne({ action: 'invitation.sent', entityId: idString(doc._id) }).lean();
@@ -196,6 +229,8 @@ describe('activateCycle', () => {
     }
     expect((await participantStats(acoA)).invited).toBe(3);
     expect((await invitationsOf(acoB, { state: 'PENDING' })).length).toBe(1);
+    // Sent ones are no longer ready to send; B's waits for its participant's lock.
+    expect((await superAdmin.get(`/api/v1/cycles/${cycleId}/monitoring`)).body.data.assessment).toMatchObject({ invited: 3, readyToSend: 1 });
   });
 
   it('is idempotent: a second run sends nothing and the safety net picks up a participant locked later', async () => {
@@ -270,7 +305,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
     expect(otp).toMatch(/^\d{6}$/);
     const mail = (await mailsFor(idString(invitation._id), 'assessment-otp'))[0]!;
     expect(mail.to).toBe('meera@bothways.test');
-    expect(mail.subject).toContain(otp);
+    expect(mail.subject).toBe(`${otp} is your Air Cargo Forum India CSQ code · Domestic survey`);
     const doc = await InvitationModel.findById(invitation._id).lean();
     expect(doc?.otp.hash).toMatch(/^[0-9a-f]{64}$/);
     expect(doc?.otp.hash).not.toContain(otp);
@@ -402,7 +437,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       const form = await withSession('/form').get();
       expect(form.status, JSON.stringify(form.body)).toBe(200);
       expect(form.body.data.survey).toMatchObject({ code: 'DOMESTIC', version: 1 });
-      expect(form.body.data.assessment).toMatchObject({ kind: 'CUSTOMER', status: 'DRAFT', customerType: 'FF' });
+      expect(form.body.data.assessment).toMatchObject({ kind: 'CUSTOMER', status: 'DRAFT', customerType: 'FF', lastSavedAt: null });
       expect(formQuestionIds(form.body.data).sort()).toEqual([...domestic.questionIds].sort());
       expect(form.body.data.progress).toEqual({ answered: 0, total: 3, pct: 0 });
       sections = (form.body.data.categories as { id: string }[]).map((category) => category.id);
@@ -410,7 +445,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
 
       const draft = await withSession('/draft').get();
       expect(draft.status).toBe(200);
-      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 3 } });
+      expect(draft.body.data).toMatchObject({ status: 'DRAFT', answers: [], sectionRemarks: [], progress: { answered: 0, total: 3 }, lastSavedAt: null });
     });
 
     it('autosaves by merge, reports readiness and refuses to submit while questions are missing', async () => {
@@ -428,6 +463,9 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(rest.body.data).toMatchObject({ answered: 3, total: 3, pct: 100 });
       const draft = await withSession('/draft').get();
       expect(draft.body.data.answers).toHaveLength(3);
+      // A reopened form can say when it was last saved: both loads carry the latest save.
+      expect(draft.body.data.lastSavedAt).toBe(rest.body.data.lastSavedAt);
+      expect((await withSession('/form').get()).body.data.assessment.lastSavedAt).toBe(rest.body.data.lastSavedAt);
       // Every question answered; the sections still need their remarks.
       expect((await withSession('/readiness').get()).body.data).toEqual({ answered: 3, total: 3, missing: [], missingSectionRemarks: sections, complete: false });
     });
@@ -474,6 +512,7 @@ describe('POST /public/assess/:token/otp and /verify', () => {
       expect(thanks).toHaveLength(1);
       expect(thanks[0]!.to).toBe('meera@bothways.test');
       expect(thanks[0]!.body).toContain('INV-A Cargo');
+      expect(thanks[0]!.subject).toBe('Cycle INV-BOTH · Domestic survey: thank you for rating INV-A Cargo');
       expect((await participantStats(acoA)).completed).toBe(1);
 
       expectError(await withSession('/submit').post(), 412, 'PRECONDITION_FAILED');
@@ -594,7 +633,7 @@ describe('reminders', () => {
       const mails = await mailsFor(idString(doc._id), 'assessment-reminder');
       expect(mails).toHaveLength(1);
       expect(mails[0]!.vars).toMatchObject({ reminderNumber: 1 });
-      expect(mails[0]!.subject).toContain('Reminder');
+      expect(mails[0]!.subject).toMatch(new RegExp(`^Cycle INV-BOTH · ${doc.surveyType === 'DOMESTIC' ? 'Domestic' : 'International'} survey: reminder to rate INV-[AB] Cargo by `));
       const reminderToken = await tokenFromMail(idString(doc._id), 'assessment-reminder');
       const invitationToken = await tokenFromMail(idString(doc._id), 'assessment-invitation');
       expect(reminderToken).not.toBe(invitationToken);

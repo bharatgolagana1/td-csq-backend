@@ -53,6 +53,7 @@ import {
   progressByCycle,
   toParticipantDtos,
 } from './participants.service.js';
+import { pendingInvitationsByCycle, pendingScopeOf } from './pending-invitations.service.js';
 
 // The participant half of the contract (WAVE1-BRIEF §2) is implemented in
 // participants.service.ts; higher modules may import it from either file.
@@ -114,10 +115,13 @@ function windowDto(window: CycleWindowDoc): WindowDto {
 }
 
 async function toSummaries(docs: CycleDoc[], participantScope: FilterQuery<CycleParticipantDoc>): Promise<CycleSummaryDto[]> {
-  const progress = await progressByCycle(
-    docs.map((doc) => doc._id),
-    participantScope,
-  );
+  const [progress, readyToSend] = await Promise.all([
+    progressByCycle(
+      docs.map((doc) => doc._id),
+      participantScope,
+    ),
+    pendingInvitationsByCycle(docs.map((doc) => idString(doc._id)), pendingScopeOf(participantScope)),
+  ]);
   return docs.map((doc) => {
     const p = progress.get(idString(doc._id));
     return {
@@ -132,7 +136,7 @@ async function toSummaries(docs: CycleDoc[], participantScope: FilterQuery<Cycle
       assessment: windowDto(doc.assessment),
       minSampleSize: doc.minSampleSize,
       participants: { airports: doc.participatingAirportIds.length, operators: doc.participatingAcoIds.length },
-      progress: { locked: p?.locked ?? 0, invited: p?.invited ?? 0, completed: p?.completed ?? 0 },
+      progress: { locked: p?.locked ?? 0, invited: p?.invited ?? 0, readyToSend: readyToSend.get(idString(doc._id)) ?? 0, completed: p?.completed ?? 0 },
       publishedAt: doc.publishedAt?.toISOString() ?? null,
       scoredAt: doc.scoredAt?.toISOString() ?? null,
       createdAt: doc.createdAt.toISOString(),
