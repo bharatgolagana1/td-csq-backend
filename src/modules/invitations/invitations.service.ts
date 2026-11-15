@@ -267,7 +267,7 @@ async function issueToken(ctx: AnyContext, invitation: InvitationDoc, cycle: Cyc
   ).lean<InvitationDoc>();
   if (!updated) return false;
 
-  const mail = await mailContext(updated, cycle);
+  const mail = await mailContext(updated, cycle, now);
   await send({
     template: 'assessment-invitation',
     to: updated.email,

@@ -43,6 +43,16 @@ export function dueSamplingReminder(schedule: readonly string[], sent: number, n
 
 const NOT_LOCKED = { 'sampling.status': { $ne: 'LOCKED' } } as const;
 
+const MANUAL_REMINDER_COVERS_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * A reminder ACFI sent by hand in the 12 hours before a scheduled one fell
+ * due (or since) counts as that one: nobody gets the same mail twice.
+ */
+export function coveredByManualReminder(manualAt: Date | null | undefined, dueAt: string): boolean {
+  return manualAt != null && manualAt.getTime() >= new Date(dueAt).getTime() - MANUAL_REMINDER_COVERS_MS;
+}
+
 /** One scheduler tick: every SAMPLING_OPEN cycle, every unlocked participant, `once()` per participant + reminder index. */
 export async function runSamplingReminders(now: Date, log: Logger = logger): Promise<{ sent: number }> {
   let sent = 0;
@@ -55,6 +65,11 @@ export async function runSamplingReminders(now: Date, log: Logger = logger): Pro
       const refId = `${idString(cycle._id)}:${idString(participant.acoId)}`;
       try {
         const result = await once(SAMPLING_REMINDER_JOB, refId, String(due.index), async () => {
+          const manualAt = participant.reminders.manualAt;
+          if (manualAt && coveredByManualReminder(manualAt, due.at)) {
+            await recordReminderSent(participant._id, due.index + 1, manualAt);
+            return `reminder ${due.index + 1}/${schedule.length} covered by the one sent by hand at ${manualAt.toISOString()}`;
+          }
           const mail = await mailSamplingReminder(cycle, participant, now);
           await recordReminderSent(participant._id, due.index + 1, now);
           return `reminder ${due.index + 1}/${schedule.length} to ${mail.to.join(', ') || 'nobody (no ACO admins)'}`;
@@ -99,7 +114,8 @@ async function unlockedParticipants(cycle: CycleDoc, acoId: string | undefined):
 
 /**
  * `POST /cycles/:id/reminders/send`. SAMPLING: mails every unlocked participant
- * (or one) now without consuming the scheduled count. ASSESSMENT: forwarded to
+ * (or one) now; the scheduler then counts it as the next scheduled reminder
+ * when that falls due within 12 hours, instead of mailing again. ASSESSMENT: forwarded to
  * the sender the invitations module registered; 412 while none is registered.
  */
 export async function sendRemindersNow(ctx: RequestContext, cycleId: string, input: SendRemindersInput, now = new Date()): Promise<ReminderRunDto> {
@@ -112,14 +128,15 @@ export async function sendRemindersNow(ctx: RequestContext, cycleId: string, inp
     return { kind: 'ASSESSMENT', sent: result.sent, recipients: [] };
   }
   if (cycle.status !== 'SAMPLING_OPEN') {
-    throw new AppError('PRECONDITION_FAILED', `Sampling reminders can only be sent while sampling is open (cycle is ${cycle.status})`, { status: cycle.status });
+    const when = cycle.status === 'DRAFT' || cycle.status === 'PUBLISHED' ? 'Sampling has not opened yet' : 'Sampling is over';
+    throw new AppError('PRECONDITION_FAILED', `${when}: sampling reminders can only be sent while sampling is open`, { status: cycle.status });
   }
   const participants = await unlockedParticipants(cycle, input.acoId);
   const recipients: ReminderRunDto['recipients'] = [];
   let sent = 0;
   for (const participant of participants) {
     const mail = await mailSamplingReminder(cycle, participant, now);
-    await CycleParticipantModel.updateOne({ _id: participant._id }, { $set: { 'reminders.lastAt': now } });
+    await CycleParticipantModel.updateOne({ _id: participant._id }, { $set: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
     recipients.push(mail);
     sent += mail.to.length;
   }

@@ -55,8 +55,13 @@ export function contactNameOf(invitation: Pick<InvitationDoc, 'customer'>): stri
   return invitation.customer.contactPerson || invitation.customer.name;
 }
 
-export async function mailContext(invitation: InvitationDoc, cycle: CycleFacts): Promise<MailContext> {
+/**
+ * `now` is when the mail goes out: when ACFI opened the assessment ahead of
+ * its planned start, the window is open from now, not from the planned date.
+ */
+export async function mailContext(invitation: InvitationDoc, cycle: CycleFacts, now = new Date()): Promise<MailContext> {
   const operator = await operatorFacts(invitation.acoId);
+  const opens = cycle.assessment.start.getTime() > now.getTime() ? now : cycle.assessment.start;
   return {
     contactName: contactNameOf(invitation),
     customerName: invitation.customer.name,
@@ -64,7 +69,7 @@ export async function mailContext(invitation: InvitationDoc, cycle: CycleFacts):
     airportName: operator.airport ? `${operator.airport.name} (${operator.airport.iata})` : '',
     cycleName: cycle.name,
     surveyType: surveyTypeLabel(invitation.surveyType),
-    assessmentStart: formatInstant(cycle.assessment.start, cycle.tz),
+    assessmentStart: formatInstant(opens, cycle.tz),
     assessmentEnd: formatInstant(cycle.assessment.end, cycle.tz),
   };
 }

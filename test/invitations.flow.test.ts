@@ -107,6 +107,11 @@ describe('cycle clock → ASSESSMENT_OPEN activates the invitations', () => {
     const sent = await InvitationModel.find({ cycleId, state: 'SENT' }).lean<InvitationDoc[]>();
     expect(sent).toHaveLength(4);
     expect(await NotificationModel.countDocuments({ template: 'assessment-invitation' })).toBe(4);
+    // Opened nine days ahead of the planned start: the mail says open from today, not the planned date.
+    const today = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+    const invite = await NotificationModel.findOne({ template: 'assessment-invitation' }).lean();
+    expect(String(invite!.vars['assessmentStart'])).toMatch(new RegExp(`^${today},`));
+    expect(invite!.body).toContain(`open from ${String(invite!.vars['assessmentStart'])} until`);
     expect((await participant(acoA)).stats).toEqual({ invited: 3, started: 0, completed: 0 });
     expect((await participant(acoB)).stats).toEqual({ invited: 1, started: 0, completed: 0 });
     expect(await AuditModel.countDocuments({ action: 'invitation.sent' })).toBe(4);
