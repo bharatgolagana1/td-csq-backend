@@ -133,7 +133,7 @@ describe('onboarding links', () => {
   });
 
   it('is a platform-only capability: an operator admin gets 403 without the task and 403 by scope with it', async () => {
-    const acoAdmin = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'LINK-ACO' });
+    const acoAdmin = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'LINK-ACO', airportIata: 'GOI' });
     expectError(await acoAdmin.get('/api/v1/onboarding/links'), 403, 'FORBIDDEN');
     await grantTasks('ACO_ADMIN', ['onboarding.links']);
     const scoped = expectError(await acoAdmin.post('/api/v1/onboarding/links').send({ orgType: 'ACO', airportId: del }), 403, 'FORBIDDEN');
@@ -303,7 +303,12 @@ describe('review', () => {
       status: 'SUBMITTED',
       marketSharePct: 40,
       organisation: { name: 'Gateway Cargo Services', address: { pincode: '110037' }, contact: { email: 'desk@gateway.test' } },
-      marketShare: { total: 60, projectedTotal: 100, entries: [{ code: 'DEL-EXISTING', sharePct: 60 }] },
+      marketShare: {
+        total: 60,
+        projectedTotal: 100,
+        entries: [{ code: 'DEL-EXISTING', sharePct: 60 }],
+        operators: [{ code: 'DEL-EXISTING', name: 'DEL-EXISTING Cargo', sharePct: 60 }],
+      },
     });
     const over = await superAdmin.get(`/api/v1/registrations/${second}`);
     expect(over.body.data.marketShare).toMatchObject({ total: 60, projectedTotal: 85 });
@@ -313,7 +318,7 @@ describe('review', () => {
   });
 
   it('an operator user cannot see registrations: 403 without the task, 403 by scope with it', async () => {
-    const acoAdmin = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'REVIEW-ACO' });
+    const acoAdmin = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'REVIEW-ACO', airportIata: 'GOI' });
     expectError(await acoAdmin.get('/api/v1/registrations'), 403, 'FORBIDDEN');
     await grantTasks('ACO_ADMIN', ['onboarding.review']);
     expectError(await acoAdmin.get('/api/v1/registrations'), 403, 'FORBIDDEN');
@@ -362,6 +367,11 @@ describe('review', () => {
     const shares = await superAdmin.get(`/api/v1/airports/${del}/market-share`);
     expect(shares.body.data.total).toBe(100);
     expect((shares.body.data.entries as { code: string; sharePct: number }[]).map((e) => [e.code, e.sharePct])).toEqual([['DEL-EXISTING', 60], ['DEL-GATEWAY', 40]]);
+    // The set was written whole, in the approval, and audited like any market-share update.
+    const shareAudit = await AuditModel.findOne({ action: 'marketshare.updated', entityId: del }).lean();
+    expect(shareAudit?.before).toMatchObject({ total: 60 });
+    expect(shareAudit?.after).toMatchObject({ total: 100 });
+    expect(idString(shareAudit!.actorUserId!)).toBe(idString(superAdmin.user._id));
 
     const mail = await NotificationModel.findOne({ to: 'meera.nair@gateway.test', template: 'registration-approved' }).lean();
     expect(mail?.status).toBe('SENT');
@@ -395,6 +405,36 @@ describe('review', () => {
     expect(await findOrganisationByCode('DEL-SECOND')).toBeNull();
   });
 
+  it('approving keeps the airport at 100: a share that breaks it is refused, naming the operators and the total; nothing is created', async () => {
+    // DEL is now DEL-EXISTING 60 + DEL-GATEWAY 40; Second Cargo asked for 25.
+    const [existing, gatewayOrg] = await Promise.all([findOrganisationByCode('DEL-EXISTING'), findOrganisationByCode('DEL-GATEWAY')]);
+    const existingId = idString(existing!._id);
+    const gatewayId = idString(gatewayOrg!._id);
+    const approve = (body: Record<string, unknown>) => superAdmin.post(`/api/v1/registrations/${second}/approve`).send({ code: 'DEL-SECOND', ...body });
+    const issues = async (body: Record<string, unknown>) => (expectError(await approve(body), 400, 'VALIDATION').details as { issues: { path: string; message: string }[] }).issues;
+
+    // As requested, the others unchanged: over.
+    expect(await issues({})).toEqual([
+      { path: 'marketSharePct', message: 'Market shares at DEL must total 100 (got 125: 100 for the 2 active operators + 25 for DEL-SECOND)' },
+    ]);
+    // Rebalanced, but under.
+    expect(await issues({ shares: [{ acoId: existingId, sharePct: 45 }, { acoId: gatewayId, sharePct: 25 }] })).toEqual([
+      { path: 'shares', message: 'Market shares at DEL must total 100 (got 95: 70 for the 2 active operators + 25 for DEL-SECOND)' },
+    ]);
+    // An active operator left out.
+    expect(await issues({ shares: [{ acoId: existingId, sharePct: 75 }] })).toEqual([
+      { path: 'shares', message: 'No share given for DEL-GATEWAY (Gateway Cargo Services), active at DEL' },
+    ]);
+    // The reviewer's own share for the new operator counts.
+    expect(await issues({ marketSharePct: 10 })).toEqual([
+      { path: 'marketSharePct', message: 'Market shares at DEL must total 100 (got 110: 100 for the 2 active operators + 10 for DEL-SECOND)' },
+    ]);
+    expectError(await approve({ shares: [{ acoId: 'nope', sharePct: 10 }] }), 400, 'VALIDATION');
+    expect((await RegistrationModel.findById(second).lean())?.status).toBe('SUBMITTED');
+    expect(await findOrganisationByCode('DEL-SECOND')).toBeNull();
+    expect(await AuditModel.countDocuments({ action: 'marketshare.updated', entityId: del })).toBe(1);
+  });
+
   it('reject records the note, e-mails the applicant and audits; the note is mandatory', async () => {
     expectError(await superAdmin.post(`/api/v1/registrations/${second}/reject`).send({}), 400, 'VALIDATION');
     expectError(await superAdmin.post(`/api/v1/registrations/${second}/reject`).send({ note: '   ' }), 400, 'VALIDATION');
@@ -421,6 +461,8 @@ describe('review', () => {
 
   it('approves an AIRPORT registration with an AIRPORT_ADMIN membership and no share; a share in the body is refused', async () => {
     expectError(await superAdmin.post(`/api/v1/registrations/${airportReg}/approve`).send({ code: 'BOM-AIRPORT', marketSharePct: 10 }), 400, 'VALIDATION');
+    const shares = expectError(await superAdmin.post(`/api/v1/registrations/${airportReg}/approve`).send({ code: 'BOM-AIRPORT', shares: [] }), 400, 'VALIDATION');
+    expect(shares.details).toEqual({ issues: [{ path: 'shares', message: 'not allowed for an AIRPORT registration' }] });
     const res = await superAdmin.post(`/api/v1/registrations/${airportReg}/approve`).send({ code: 'BOM-AIRPORT' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data).toMatchObject({ status: 'APPROVED', marketShare: null, reviewNote: null });
@@ -435,5 +477,58 @@ describe('review', () => {
     expect(roles.body.data[0].memberships[0].roleCode).toBe('AIRPORT_ADMIN');
     expect((await superAdmin.get(`/api/v1/airports/${bom}/market-share`)).body.data.entries).toEqual([]);
     expect(await NotificationModel.countDocuments({ to: 'priya@bomairport.test', template: 'registration-approved' })).toBe(1);
+  });
+});
+
+describe('approval rebalances the airport', () => {
+  async function register(iata: string, name: string, email: string, marketSharePct: number | undefined): Promise<string> {
+    const link = await createLink({ orgType: 'ACO', airportId: await airportIdByIata(iata) });
+    const res = await t.anon.post(`/api/v1/public/onboarding/${link.token}`).send(
+      registrationPayload({
+        organisation: { ...(registrationPayload()['organisation'] as object), name },
+        admin: { name: 'Admin', email, phone: '+91 4' },
+        marketSharePct,
+      }),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    return res.body.data.registrationId as string;
+  }
+
+  it('the first operator at an airport must hold 100; the reviewer can set it', async () => {
+    const hyd = await airportIdByIata('HYD');
+    const id = await register('HYD', 'Hyderabad First Cargo', 'first@hyd.test', 40);
+    expect((await superAdmin.get(`/api/v1/registrations/${id}`)).body.data.marketShare).toEqual({ entries: [], total: 0, projectedTotal: 40, operators: [] });
+    const refused = expectError(await superAdmin.post(`/api/v1/registrations/${id}/approve`).send({ code: 'HYD-FIRST' }), 400, 'VALIDATION');
+    expect(refused.details).toEqual({ issues: [{ path: 'marketSharePct', message: 'HYD-FIRST is the only active operator at HYD, so its share must be 100 (got 40)' }] });
+    const res = await superAdmin.post(`/api/v1/registrations/${id}/approve`).send({ code: 'HYD-FIRST', marketSharePct: 100 });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.marketShare).toMatchObject({ total: 100, projectedTotal: 100, operators: [{ code: 'HYD-FIRST', sharePct: 100 }] });
+    expect((await AuditModel.findOne({ action: 'registration.approved', entityId: id }).lean())?.after).toMatchObject({ marketSharePct: 100 });
+    expect((await superAdmin.get(`/api/v1/airports/${hyd}/market-share`)).body.data.entries).toMatchObject([{ code: 'HYD-FIRST', sharePct: 100 }]);
+  });
+
+  it('with every active operator rebalanced to exactly 100 the whole set is applied in the approval; a stale inactive share is dropped', async () => {
+    const hyd = await airportIdByIata('HYD');
+    const first = idString((await findOrganisationByCode('HYD-FIRST'))!._id);
+    // An inactive operator still holding an old share entry at HYD.
+    const gone = await createTestOperator({ code: 'HYD-GONE', airportIata: 'HYD', status: 'INACTIVE' });
+    await setCurrentShare({ airportId: gone.airportId!, acoId: gone._id, sharePct: 15, setBy: null });
+
+    const id = await register('HYD', 'Hyderabad Second Cargo', 'second@hyd.test', 30);
+    const detail = (await superAdmin.get(`/api/v1/registrations/${id}`)).body.data.marketShare;
+    // The current set (115 with the stale entry) and the active operators the approval rebalances.
+    expect(detail).toMatchObject({ total: 115, projectedTotal: 130, operators: [{ acoId: first, code: 'HYD-FIRST', sharePct: 100 }] });
+
+    const res = await superAdmin.post(`/api/v1/registrations/${id}/approve`).send({ code: 'HYD-SECOND', shares: [{ acoId: first, sharePct: 70 }] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const set = (await superAdmin.get(`/api/v1/airports/${hyd}/market-share`)).body.data;
+    expect(set.total).toBe(100);
+    expect((set.entries as { code: string; sharePct: number }[]).map((e) => [e.code, e.sharePct])).toEqual([
+      ['HYD-FIRST', 70],
+      ['HYD-SECOND', 30],
+    ]);
+    const audit = await AuditModel.findOne({ action: 'marketshare.updated', entityId: hyd }).sort({ at: -1 }).lean();
+    expect(audit?.before).toMatchObject({ total: 115 });
+    expect(audit?.after).toMatchObject({ total: 100 });
   });
 });

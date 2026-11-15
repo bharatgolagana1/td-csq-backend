@@ -249,18 +249,20 @@ registration link session), or a task code. All `[list]` endpoints accept
 
 ### organisations
 - `GET /operators` [list] `operators.view` (filters `airportId`, `status`) → ACO summaries `{ id, code, name, airport { id, iata, name }, operations, status, memberCount, customerCount, currentShare? }`
-- `POST /operators` `operators.manage` `{ code, name, airportId, operations, address, contact, admin { name, email, phone }, marketSharePct? }` → creates ACTIVE org + INVITED admin user.
+- `POST /operators` `operators.manage` `{ code, name, airportId, operations, address, contact, admin { name, email, phone }, marketSharePct?, shares?: [{ acoId, sharePct }] }` → creates ACTIVE org + INVITED admin user, and writes the airport's whole current share set with the new operator in it (see **Joining shares** below).
 - `GET /operators/:id` (PLATFORM any; ACO own) · `PATCH /operators/:id` `operators.manage` · `POST /operators/:id/deactivate`
 - `GET /airports/:id/market-share?cycleId=` `marketshare.view` → `{ airportId, cycleId?, entries: [{ acoId, name, sharePct }], total, frozen }`
 - `PUT /airports/:id/market-share` `marketshare.manage` `{ cycleId?: string|null, entries: [{ acoId, sharePct }] }` → validates total = 100 (±0.01, compared to two decimals so 99.99 passes), refuses when the cycle is frozen.
 - `GET /market-share/totals?airportIds=a,b,…` `marketshare.view` → `[{ airportId, total, entries }]`: each listed airport's current (cycle-less) share total (two decimals; 0 when none is set) and how many entries it has, in the order asked, from one aggregation — what the cycle builder needs to flag every airport that would refuse a publish. 1–300 ids, de-duplicated; unknown airports and airports outside the caller's scope (ACO: its airport; AIRPORT: its own) are left out.
+- **Joining shares.** An operator joining an airport — `POST /operators` and `POST /registrations/:id/approve` — must leave the airport's current set at 100. The request carries the new operator's share (`marketSharePct`; omitted counts as 0, or on an approval the requested share) and, optionally, `shares`: one entry for **every** operator already ACTIVE at the airport (omitted keeps their current shares). The set — those operators plus the new one — must total 100 ±0.01, so a sole operator holds 100. 400 `VALIDATION` with `details.issues` naming the operator and the total: `shares.N.acoId` (unknown, inactive, at another airport, listed twice), `shares` ("No share given for CODE (name), active at IATA"; or "Market shares at IATA must total 100 (got 95: 70 for the 2 active operators + 25 for NEW)"), `marketSharePct` (the same total message when `shares` is omitted; "NEW is the only active operator at IATA, so its share must be 100 (got 40)"). The set is written whole in the creating transaction (entries of operators no longer active there are dropped; 409 if the active operators changed meanwhile) and audited as `marketshare.updated`. `PATCH /operators/:id` moving an operator to another airport takes no shares: both airports' sets are left as they are (fix them with `PUT`). No endpoint reactivates an operator today; one that does must take the airport's set the same way.
 
 ### onboarding
 - `POST /onboarding/links` `onboarding.links` `{ orgType, airportId?, expiresInDays = 14, note? }` → `{ id, url, expiresAt }` (the raw token only in this response) · `GET /onboarding/links` [list] · `DELETE /onboarding/links/:id`
 - `GET /public/onboarding/:token` public → `{ orgType, airport?: { id, iata, name }, expiresAt, used }` (404 unknown, 410 expired)
 - `POST /public/onboarding/:token` public, body = registration form (`organisation`, `admin`, `operations`, `marketSharePct?`) → `{ registrationId }`; e-mail "request received" to admin; notifies ACFI.
 - `GET /registrations` [list] `onboarding.review` (filter `status`) · `GET /registrations/:id`
-- `POST /registrations/:id/approve` `onboarding.review` `{ code, marketSharePct?, note? }` → creates organisation ACTIVE, admin user INVITED, membership ACO_ADMIN, e-mail "account approved"; `POST /registrations/:id/reject` `{ note }`.
+- `GET /registrations/:id` carries, for an ACO registration, `marketShare { entries, total, projectedTotal, operators }`: the airport's current set and total, the ACTIVE operators there with their current share (0 when unset; the rows `shares` rebalances), and `projectedTotal` = Σ `operators` + the requested share while SUBMITTED (the total once reviewed). Null for AIRPORT registrations.
+- `POST /registrations/:id/approve` `onboarding.review` `{ code, marketSharePct?, shares?, note? }` → creates organisation ACTIVE, admin user INVITED, membership ACO_ADMIN, and for an operator the airport's whole current share set (**Joining shares** under organisations: the reviewer's or else the requested share for the new operator, `shares` for the others, total 100), all in one transaction; e-mail "account approved". `marketSharePct` / `shares` on an AIRPORT registration are 400. `POST /registrations/:id/reject` `{ note }`.
 
 ### surveys
 - `GET /surveys` `surveys.view` → both survey types with their versions · `GET /surveys/:id` → full tree `{ survey, categories: [{ …, subcategories: [{ …, questions[] }], questions[] }] }`
@@ -330,11 +332,15 @@ registration link session), or a task code. All `[list]` endpoints accept
 ## 7. Flows and rules
 
 - **Onboarding.** Link (14 d) → form → `registrations` SUBMITTED → ACFI reviews
-  (sees airport's current market-share total) → approve creates the
-  organisation, the admin user and sends credentials/set-password. Market
-  shares at an airport must total 100 before a cycle that includes it can be
-  published; the approval screen shows the running total and the API refuses a
-  publish that breaks it.
+  (sees the airport's current shares and its active operators) → approve
+  creates the organisation, the admin user and sends credentials/set-password.
+  Market shares at an airport must total 100 before a cycle that includes it
+  can be published, so adding an operator never breaks the total: the approval
+  (like `POST /operators`) takes the new operator's share together with the
+  rebalanced shares of the operators already there and is refused unless the
+  set totals 100 (a first operator holds 100). The approval screen edits that
+  set with a live total. An airport with no active operator totals 0 and
+  refuses a publish; the cycle builder does not offer it.
 - **Cycle clock** (scheduler, every minute, in the cycle's tz): `sampling.start`
   → SAMPLING_OPEN (e-mail ACO admins); `sampling.end` → SAMPLING_CLOSED
   (operators not locked are listed for ACFI; ACFI may extend); `assessment.start`

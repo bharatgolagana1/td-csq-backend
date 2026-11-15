@@ -219,7 +219,7 @@ export async function currentSharesForOperators(acoIds: Iterable<string | Types.
   return new Map(docs.map((doc) => [idString(doc.acoId), doc.sharePct]));
 }
 
-/** Sets one operator's current share without validating the airport total (operator creation / approval). */
+/** Sets one operator's current share without validating the airport total: fixtures and data repair only — the API writes whole sets (putMarketShare, applyJoiningShares). */
 export async function setCurrentShare(
   input: { airportId: Types.ObjectId; acoId: Types.ObjectId; sharePct: number; setBy: Types.ObjectId | null },
   session?: ClientSession,

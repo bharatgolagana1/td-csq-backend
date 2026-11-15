@@ -11,7 +11,9 @@ import { findOrCreateInvitedUser } from '../../modules/identity/users.service.js
 import { getMarketShare, putMarketShare } from '../../modules/organisations/market-share.service.js';
 import { createOperator } from '../../modules/organisations/operators.service.js';
 import { OrganisationModel, type OrganisationDoc } from '../../modules/organisations/organisations.model.js';
+import type { JoiningSharesInput } from '../../modules/organisations/organisations.schemas.js';
 import { findOrganisationByCode, findOrganisationById } from '../../modules/organisations/organisations.service.js';
+import { activeOperatorShares } from '../../modules/organisations/share-join.service.js';
 
 import { demoKey, findDemoId, tagDemo } from './runtime.js';
 
@@ -98,6 +100,25 @@ async function requireAirport(iata: string): Promise<AirportDoc> {
   return airport;
 }
 
+/**
+ * The share set an operator is created with: the API wants the airport's
+ * whole set at 100 on every join, so the first operator at an airport holds
+ * 100 and a later one takes its spec share while the operators already there
+ * are scaled to fill the rest. `ensureMarketShares` then writes the intended
+ * sets once every operator exists.
+ */
+async function joiningShares(airportId: string, spec: OperatorSpec): Promise<{ marketSharePct: number; shares: JoiningSharesInput }> {
+  const others = await activeOperatorShares(airportId);
+  const othersTotal = others.reduce((sum, other) => sum + other.sharePct, 0);
+  if (others.length === 0 || othersTotal === 0) return { marketSharePct: 100, shares: others.map((other) => ({ acoId: other.acoId, sharePct: 0 })) };
+  const rest = 100 - spec.sharePct;
+  const shares = others.map((other) => ({ acoId: other.acoId, sharePct: Math.round((other.sharePct * rest * 100) / othersTotal) / 100 }));
+  const drift = Math.round((rest - shares.reduce((sum, share) => sum + share.sharePct, 0)) * 100) / 100;
+  const [first] = shares;
+  if (first) first.sharePct = Math.round((first.sharePct + drift) * 100) / 100;
+  return { marketSharePct: spec.sharePct, shares };
+}
+
 async function ensureOperator(ctx: RequestContext, spec: OperatorSpec): Promise<DemoOperator> {
   const key = demoKey('operator', spec.code);
   const airport = await requireAirport(spec.iata);
@@ -121,7 +142,7 @@ async function ensureOperator(ctx: RequestContext, spec: OperatorSpec): Promise<
       address: { line1: `Cargo Terminal, ${airport.name}`, line2: null, city: spec.city, state: spec.state, pincode: spec.pincode },
       contact: { name: 'Operations Desk', email: `ops@${slug(spec)}.example.in`, phone: '+91 11 2565 0000' },
       admin: spec.admin,
-      marketSharePct: spec.sharePct,
+      ...(await joiningShares(idString(airport._id), spec)),
     });
     orgId = dto.id;
     await tagDemo(OrganisationModel, orgId, key);

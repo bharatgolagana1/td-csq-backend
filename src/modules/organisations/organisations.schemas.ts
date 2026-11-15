@@ -61,6 +61,13 @@ export const operatorListQuery = listQuerySchema.extend({
 });
 export type OperatorListQuery = z.infer<typeof operatorListQuery>;
 
+/**
+ * The other operators' shares when an operator joins an airport (POST /operators,
+ * POST /registrations/:id/approve): one entry per operator already ACTIVE there.
+ */
+export const joiningSharesSchema = z.array(z.object({ acoId: idSchema, sharePct: z.number().min(0).max(100) }).strict()).max(200);
+export type JoiningSharesInput = z.infer<typeof joiningSharesSchema>;
+
 export const createOperatorBody = z
   .object({
     code: orgCodeSchema,
@@ -77,7 +84,10 @@ export const createOperatorBody = z
         phone: z.string().trim().min(3).max(32),
       })
       .strict(),
+    /** The new operator's current share; omitted counts as 0. */
     marketSharePct: z.number().min(0).max(100).optional(),
+    /** Shares for every operator already ACTIVE at the airport; omitted keeps their current shares. With the new one they must total 100. */
+    shares: joiningSharesSchema.optional(),
   })
   .strict();
 export type CreateOperatorInput = z.infer<typeof createOperatorBody>;

@@ -13,10 +13,11 @@ import { requireRoleByCode } from '../identity/roles.service.js';
 import { findOrCreateInvitedUser } from '../identity/users.service.js';
 import { send } from '../notifications/notifications.service.js';
 
-import { currentSharesForOperators, setCurrentShare } from './market-share.service.js';
+import { auditShareChange, currentSharesForOperators } from './market-share.service.js';
 import { OrganisationModel, type OrganisationDoc } from './organisations.model.js';
 import type { CreateOperatorInput, OperatorDto, OperatorListQuery, PatchOperatorInput } from './organisations.schemas.js';
 import { createOrganisation, findOrganisationByCode, toOrganisationView } from './organisations.service.js';
+import { applyJoiningShares, planJoiningShares } from './share-join.service.js';
 
 /**
  * Customer counts come from the customers module, which does not exist yet.
@@ -116,17 +117,19 @@ export async function getOperator(ctx: RequestContext, id: string): Promise<Oper
 /**
  * POST /operators: one transaction creates the ACTIVE organisation, the
  * INVITED admin user (or reuses an existing account), the ACO_ADMIN membership
- * and the optional current market share; then the invitation is sent and the
- * creation audited.
+ * and the airport's current market-share set with the new operator in it (it
+ * must total 100: `planJoiningShares`); then the invitation is sent and the
+ * creation and the share change audited.
  */
 export async function createOperator(ctx: RequestContext, input: CreateOperatorInput): Promise<OperatorDto> {
-  const airport = await requireAirport(input.airportId);
+  await requireAirport(input.airportId);
   if (await findOrganisationByCode(input.code)) throw new AppError('CONFLICT', `Operator code ${input.code} already exists`);
   const adminRole = await requireRoleByCode('ACO_ADMIN').catch(() => {
     throw new AppError('PRECONDITION_FAILED', 'The ACO_ADMIN role is not seeded; run npm run seed');
   });
+  const plan = await planJoiningShares({ airportId: input.airportId, code: input.code, sharePct: input.marketSharePct, others: input.shares });
 
-  const { org, admin } = await withTransaction(async (session) => {
+  const { org, admin, shareChange } = await withTransaction(async (session) => {
     const created = await createOrganisation(
       {
         type: 'ACO',
@@ -145,13 +148,8 @@ export async function createOperator(ctx: RequestContext, input: CreateOperatorI
     );
     const { user } = await findOrCreateInvitedUser(input.admin, session);
     await ensureMembership({ userId: user._id, orgId: created._id, roleId: adminRole._id }, session);
-    if (input.marketSharePct !== undefined) {
-      await setCurrentShare(
-        { airportId: airport._id, acoId: created._id, sharePct: input.marketSharePct, setBy: toId(ctx.user.id) },
-        session,
-      );
-    }
-    return { org: created, admin: user };
+    const change = await applyJoiningShares(ctx, plan, created._id, session);
+    return { org: created, admin: user, shareChange: change };
   });
 
   await send({
@@ -168,6 +166,7 @@ export async function createOperator(ctx: RequestContext, input: CreateOperatorI
     after: { ...dto, admin: { id: idString(admin._id), email: admin.email } },
     orgId: dto.id,
   });
+  await auditShareChange(ctx, shareChange);
   return dto;
 }
 
