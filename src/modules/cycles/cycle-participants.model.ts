@@ -37,6 +37,8 @@ export interface SelfAssessmentStatuses {
 export interface ParticipantReminders {
   sent: number;
   lastAt: Date | null;
+  /** The last reminder ACFI sent by hand (POST /cycles/:id/reminders/send). */
+  manualAt?: Date | null;
 }
 
 /**
@@ -93,6 +95,7 @@ const remindersSchema = new Schema<ParticipantReminders>(
   {
     sent: { type: Number, required: true, default: 0, min: 0 },
     lastAt: { type: Date, default: null },
+    manualAt: { type: Date, default: null },
   },
   { _id: false },
 );

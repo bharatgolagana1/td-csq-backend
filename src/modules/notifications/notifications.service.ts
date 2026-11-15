@@ -76,6 +76,30 @@ function toDto(doc: NotificationDoc): NotificationDto {
   };
 }
 
+const SECRET_IN_LINK = /(\/(?:assess|register)\/)[^/\s?#"'<>]+/g;
+const HIDDEN = '••••••';
+
+/**
+ * What the outbox (GET /notifications, resend) shows. A mail that went out by
+ * e-mail carries the recipient's personal link token and one-time code: they
+ * are the customer's alone, so the outbox masks them; otherwise anyone with
+ * notifications.view could open the link and answer as the customer. With the
+ * LOG transport (no SMTP_URL) the outbox is the only delivery, so they show.
+ */
+function outboxDto(doc: NotificationDoc): NotificationDto {
+  const dto = toDto(doc);
+  if (doc.channel !== 'EMAIL') return dto;
+  const otp = typeof doc.vars['otp'] === 'string' && doc.vars['otp'] !== '' ? doc.vars['otp'] : null;
+  const mask = (text: string) => {
+    const masked = text.replace(SECRET_IN_LINK, `$1${HIDDEN}`);
+    return otp ? masked.split(otp).join(HIDDEN) : masked;
+  };
+  const vars = Object.fromEntries(
+    Object.entries(dto.vars).map(([key, value]) => [key, key === 'otp' ? HIDDEN : typeof value === 'string' ? mask(value) : value]),
+  );
+  return { ...dto, subject: mask(dto.subject), body: mask(dto.body), vars };
+}
+
 /** Delivers a QUEUED row and records SENT or FAILED. Delivery failures never throw. */
 async function deliver(doc: NotificationDoc): Promise<NotificationDoc> {
   const { transport, from } = requireConfig();
@@ -151,7 +175,7 @@ export async function listNotifications(ctx: RequestContext, query: Notification
     NotificationModel.find(filter).sort(sort).skip(skip).limit(limit).lean<NotificationDoc[]>(),
     NotificationModel.countDocuments(filter),
   ]);
-  return pageOf(docs.map(toDto), total, query);
+  return pageOf(docs.map(outboxDto), total, query);
 }
 
 /** Re-delivers an existing notification as a new row linked through `resendOf`; audited. */
@@ -180,5 +204,5 @@ export async function resendNotification(ctx: RequestContext, id: string): Promi
     after: { status: delivered.status },
     orgId: original.refs.acoId ? idString(original.refs.acoId) : ctx.org.id,
   });
-  return toDto(delivered);
+  return outboxDto(delivered);
 }

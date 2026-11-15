@@ -105,6 +105,24 @@ describe('GET /notifications and resend', () => {
     expect((await superAdmin.get('/api/v1/notifications?q=someone')).body.meta.total).toBe(1);
   });
 
+  it('e-mailed links and one-time codes are masked in the outbox; with the LOG transport they show', async () => {
+    const base = { refs: { cycleId: null, acoId: null, customerId: null, invitationId: null, userId: null }, status: 'SENT', html: '' };
+    const url = `${t.env.PUBLIC_WEB_URL}/assess/Tok3n-Secret_x`;
+    await NotificationModel.create([
+      { ...base, channel: 'EMAIL', template: 'assessment-otp', to: 'otp@test.csq', subject: '483920 is your ACFI CSQ code', body: 'Your code: 483920\n', vars: { otp: '483920', contactName: 'C' } },
+      { ...base, channel: 'EMAIL', template: 'assessment-invitation', to: 'inv@test.csq', subject: 'Your CSQ assessment', body: `Start the assessment: ${url}\n`, vars: { url } },
+      { ...base, channel: 'LOG', template: 'assessment-invitation', to: 'log@test.csq', subject: 'Your CSQ assessment', body: `Start the assessment: ${url}\n`, vars: { url } },
+    ]);
+    const rows = (await superAdmin.get('/api/v1/notifications?q=test.csq&pageSize=100')).body.data as { to: string; subject: string; body: string; vars: Record<string, unknown> }[];
+    const byTo = (to: string) => rows.find((row) => row.to === to)!;
+    expect(byTo('otp@test.csq')).toMatchObject({ subject: '•••••• is your ACFI CSQ code', body: 'Your code: ••••••\n', vars: { otp: '••••••' } });
+    expect(byTo('inv@test.csq').body).toBe(`Start the assessment: ${t.env.PUBLIC_WEB_URL}/assess/••••••\n`);
+    expect(byTo('inv@test.csq').vars['url']).toBe(`${t.env.PUBLIC_WEB_URL}/assess/••••••`);
+    expect(JSON.stringify([byTo('otp@test.csq'), byTo('inv@test.csq')])).not.toMatch(/483920|Tok3n-Secret_x/);
+    expect(byTo('log@test.csq').body).toContain('/assess/Tok3n-Secret_x');
+    await NotificationModel.deleteMany({ to: { $in: ['otp@test.csq', 'inv@test.csq', 'log@test.csq'] } });
+  });
+
   it('an operator sees only notifications linked to it and can resend them', async () => {
     await grantTasks('ACO_ADMIN', ['notifications.view', 'notifications.send']);
     const acoAdmin = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgId: acoId });

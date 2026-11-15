@@ -189,11 +189,18 @@ async function persistSelection(ctx: RequestContext, context: SamplingContext, r
       updateOne: { filter: key(item), update: { $set: { state: 'REMOVED' as const, removedAt: now } } },
     })),
   ];
-  if (operations.length > 0) await SampleModel.bulkWrite(operations, { ordered: true });
-  const selectedCount = await SampleModel.countDocuments({ cycleId: toId(cycle.id), acoId: toId(participant.acoId), state: 'SELECTED' });
-  await patchParticipantSampling(cycle.id, participant.acoId, {
-    status: participant.sampling.status === 'UNLOCKED' ? 'UNLOCKED' : 'IN_PROGRESS',
-    selectedCount,
+  // One transaction: every change writes the participant's counter, so two
+  // overlapping clicks conflict there and the later one recounts — the
+  // stored selectedCount can never be left at an older request's count.
+  await withTransaction(async (session) => {
+    if (operations.length > 0) await SampleModel.bulkWrite(operations, { ordered: true, session });
+    const selectedCount = await SampleModel.countDocuments({ cycleId: toId(cycle.id), acoId: toId(participant.acoId), state: 'SELECTED' }, { session });
+    await patchParticipantSampling(
+      cycle.id,
+      participant.acoId,
+      { status: participant.sampling.status === 'UNLOCKED' ? 'UNLOCKED' : 'IN_PROGRESS', selectedCount },
+      session,
+    );
   });
 }
 
