@@ -217,9 +217,9 @@ export const historyRowResponse = z.object({
   /** The latest autosave of answers or remarks; null until something is saved. A draft's "Last saved". */
   lastSavedAt: z.string().nullable(),
   submittedAt: z.string().nullable(),
-  /** The assessment's own NA-excluding mean rating, 1 dp; null until something is rated, on an IMPORT_EXPORT assessment, and on a customer's without `assessments.scores`. */
+  /** The assessment's own NA-excluding mean rating, 1 dp; null on a DRAFT (no score until it is submitted), when nothing is rated, on an IMPORT_EXPORT assessment, and on a customer's without `assessments.scores`. */
   score: z.number().nullable(),
-  /** The same per direction on an IMPORT_EXPORT assessment; null on a SINGLE one (and, like `score`, on a customer's without `assessments.scores`). */
+  /** The same per direction on an IMPORT_EXPORT assessment; null on a SINGLE one (and, like `score`, on a DRAFT and on a customer's without `assessments.scores`). */
   importScore: z.number().nullable(),
   exportScore: z.number().nullable(),
 });

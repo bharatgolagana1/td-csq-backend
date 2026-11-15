@@ -474,6 +474,10 @@ export async function publishCycle(ctx: RequestContext, id: string, now = new Da
   if (cycle.participatingAirportIds.length === 0 || cycle.participatingAcoIds.length === 0) {
     throw new AppError('PRECONDITION_FAILED', 'A cycle needs at least one participating airport and operator');
   }
+  // The API refuses 0 since 16 Nov 2026; a draft saved before that may still hold it.
+  if (cycle.minSampleSize < 1) {
+    throw new AppError('PRECONDITION_FAILED', 'The minimum sample is at least 1 customer; set it before publishing', { issues: [{ path: 'minSampleSize', message: 'The minimum sample is at least 1 customer' }] });
+  }
   const operators = await loadParticipatingOperators(cycle);
   const plans = planParticipants(cycle, operators);
   const snapshots = await assertMarketSharesComplete(ctx, cycle);

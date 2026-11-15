@@ -546,13 +546,14 @@ type OwnScores = Pick<HistoryRowDto, 'score' | 'importScore' | 'exportScore'>;
 
 const NO_SCORES: OwnScores = { score: null, importScore: null, exportScore: null };
 
-/** `score` on a SINGLE assessment, the import / export pair on an IMPORT_EXPORT one. */
+/** `score` on a SINGLE assessment, the import / export pair on an IMPORT_EXPORT one; a DRAFT has none until it is submitted. */
 function ownScores(doc: AssessmentDoc): OwnScores {
+  if (doc.status !== 'SUBMITTED') return NO_SCORES;
   if (answerModeOf(doc) === 'SINGLE') return { ...NO_SCORES, score: ownScore(doc.answers) };
   return { ...NO_SCORES, importScore: ownScoreByDirection(doc.answers, 'IMPORT'), exportScore: ownScoreByDirection(doc.answers, 'EXPORT') };
 }
 
-/** History rows; a customer's identity per `revealsIdentity`, its scores only with `assessments.scores` (a self-assessment shows both). */
+/** History rows; a customer's identity per `revealsIdentity`, its scores only with `assessments.scores` (a self-assessment shows both), and only once SUBMITTED. */
 async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]): Promise<HistoryRowDto[]> {
   const reveal = revealsIdentity(ctx, await getSettingsDoc());
   const customerScores = ctx.tasks.has('assessments.scores');

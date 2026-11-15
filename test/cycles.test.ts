@@ -153,6 +153,14 @@ describe('POST /cycles', () => {
     expectError(await superAdmin.post(CYCLES).send({ ...base, code: 'csq-2026-h2', initiationDate: dateIn(1) }), 409, 'CONFLICT');
   });
 
+  it('requires a minimum sample of at least one customer, on create and on a DRAFT patch', async () => {
+    const zero = await superAdmin.post(CYCLES).send({ name: 'Zero', code: 'BAD-ZERO', type: 'DOMESTIC', initiationDate: dateIn(1), minSampleSize: 0 });
+    const issues = expectError(zero, 400, 'VALIDATION').details as { issues: { path: string; message: string }[] };
+    expect(issues.issues).toEqual([expect.objectContaining({ path: 'minSampleSize', message: 'The minimum sample is at least 1 customer' })]);
+    expectError(await superAdmin.post(CYCLES).send({ name: 'Negative', code: 'BAD-NEG', type: 'DOMESTIC', initiationDate: dateIn(1), minSampleSize: -3 }), 400, 'VALIDATION');
+    expectError(await superAdmin.patch(`${CYCLES}/${cycle1}`).send({ minSampleSize: 0 }), 400, 'VALIDATION');
+  });
+
   it('rejects an operator that is not at a participating airport, or unknown', async () => {
     const res = await superAdmin.post(CYCLES).send({
       name: 'Bad',
@@ -267,6 +275,13 @@ describe('POST /cycles/:id/publish', () => {
   });
 
   it('publishes: snapshot per airport, survey versions pinned, participants planned, admins mailed, events emitted', async () => {
+    // A draft saved with a minimum of 0 before the API refused it cannot be published.
+    const { minSampleSize } = (await CycleModel.findById(cycle1).lean())!;
+    await CycleModel.updateOne({ _id: cycle1 }, { $set: { minSampleSize: 0 } });
+    const zero = expectError(await superAdmin.post(`${CYCLES}/${cycle1}/publish`), 412, 'PRECONDITION_FAILED');
+    expect(zero.message).toBe('The minimum sample is at least 1 customer; set it before publishing');
+    await CycleModel.updateOne({ _id: cycle1 }, { $set: { minSampleSize } });
+
     const res = await superAdmin.post(`${CYCLES}/${cycle1}/publish`);
     expect(res.status).toBe(200);
     const cycle = res.body.data;

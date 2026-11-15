@@ -899,6 +899,32 @@ describe('history order', () => {
     expect(names(bySave.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo', 'draftNeverSaved']);
   });
 
+  it('gives a draft no score in the list, the return or the export until it is submitted; its answers are still there', async () => {
+    const id = ids['draftSavedEarlier']!;
+    await patchAnswers(id, [
+      { questionId: domestic.q['Q.OPT']!, rating: 5 },
+      { questionId: domestic.q['Q.PLAIN']!, rating: 2 },
+    ]);
+    const row = ((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}`)).body.data as { id: string }[]).find((r) => r.id === id);
+    expect(row).toMatchObject({ status: 'DRAFT', progress: { answered: 2 }, score: null, importScore: null, exportScore: null });
+    const one = await superAdmin.get(`/api/v1/assessments/${id}`);
+    expect(one.body.data).toMatchObject({ status: 'DRAFT', score: null, importScore: null, exportScore: null });
+    expect((one.body.data.answers as { code: string; rating: number | null }[]).find((a) => a.code === 'Q.OPT')?.rating).toBe(5);
+    const csv = await superAdmin.get(`/api/v1/assessments/export?cycleId=${order.id}`);
+    const lines = csv.text.trim().split('\n').slice(1).filter((line) => line.startsWith(id));
+    expect(lines).toHaveLength(4);
+    // The score column (the 11th) is empty on every line; the ratings (the 16th) are there.
+    expect(lines.map((line) => line.split(',')[10])).toEqual(['', '', '', '']);
+    expect(lines.map((line) => line.split(',')[15]).filter(Boolean).sort()).toEqual(['2', '5']);
+    // The same answers once submitted (set by hand, as in this block): the mean of 5 and 2.
+    await AssessmentModel.updateOne({ _id: toId(id) }, { $set: { status: 'SUBMITTED', submittedAt: new Date() } });
+    try {
+      expect((await superAdmin.get(`/api/v1/assessments/${id}`)).body.data).toMatchObject({ status: 'SUBMITTED', score: 3.5 });
+    } finally {
+      await AssessmentModel.updateOne({ _id: toId(id) }, { $set: { status: 'DRAFT', submittedAt: null } });
+    }
+  });
+
   it('historySort puts the default order behind any requested key', () => {
     expect(historySort({ submittedAt: -1 })).toEqual({ status: -1, submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 });
     expect(Object.keys(historySort({ submittedAt: 1 }))).toEqual(['status', 'submittedAt', 'lastSavedAt', 'startedAt', '_id']);
