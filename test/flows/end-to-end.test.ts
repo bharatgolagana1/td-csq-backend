@@ -15,7 +15,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { logger } from '../../src/core/logger.js';
 import { cyclesTransitions } from '../../src/jobs/cycles.jobs.js';
-import { PHASE_I_IATA } from '../../src/modules/airports/airports.regions.js';
 import { CUSTOMER_CSV_HEADERS } from '../../src/modules/customers/domain/csvTemplate.js';
 import { addCalendarDays } from '../../src/modules/cycles/domain/derive.js';
 import { localDateOf, toInstant } from '../../src/modules/cycles/domain/windows.js';
@@ -728,7 +727,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expectError(await adminA.post(`${API}/scoring/cycles/${cycleId}/run`).send({}), 403, 'FORBIDDEN');
   });
 
-  it('19 · the operator dashboard: figures, assessment counts, the funnel, its own airport in the national table — and nothing of the other operator', async () => {
+  it('19 · the operator dashboard: figures, assessment counts, the funnel, no airport ranking — and nothing of the other operator', async () => {
     const res = await adminA.get(`${API}/reports/operator/${acoA}`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const report = res.body.data;
@@ -744,7 +743,6 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       assessorStats: { total: 3, completed: 3, inProgress: 0, yetToStart: 0 },
       // "4 assessments · 1 self · 3 customer"
       assessments: { total: 4, customer: 3, self: 1 },
-      airportsTotal: PHASE_I_IATA.length,
     });
     expect(report.overall).not.toHaveProperty('suppressed');
     expect(report.cycle.scoredAt).not.toBeNull();
@@ -769,10 +767,9 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     ]);
     expect(categories[0]!.customer.mean).toBeLessThan(4);
     expect(categories.slice(1).map((category) => category.customer.mean)).toEqual([4, 4, 4]);
-    expect(report.nationalTable).toEqual([
-      { airportIata: 'DEL', airportName: 'Indira Gandhi International Airport', rating: overallMean, rank: 1, rankOf: 1, isOwn: true },
-      { airportIata: 'BOM', airportName: 'Chhatrapati Shivaji Maharaj International Airport', rating: null, rank: null, rankOf: 1, isOwn: false },
-    ]);
+    // The airport rankings are the national report's (ACFI): an operator's dashboard carries none.
+    expect(report).not.toHaveProperty('nationalTable');
+    expect(report).not.toHaveProperty('airportsTotal');
     expect(JSON.stringify(report)).not.toContain('Harbour');
     expect(JSON.stringify(report)).not.toContain(acoB);
 
@@ -797,10 +794,8 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       assessments: { total: 0, customer: 0, self: 0 },
       assessorStats: { total: 0, completed: 0, inProgress: 0, yetToStart: 0 },
     });
-    expect((own.body.data.nationalTable as { airportIata: string; isOwn: boolean }[]).map((row) => [row.airportIata, row.isOwn])).toEqual([
-      ['DEL', false],
-      ['BOM', true],
-    ]);
+    expect(own.body.data).not.toHaveProperty('nationalTable');
+    expect(JSON.stringify(own.body.data)).not.toContain('Deccan');
 
     const csv = await adminA.get(`${API}/reports/export?scope=operator&acoId=${acoA}`);
     expect(csv.status).toBe(200);

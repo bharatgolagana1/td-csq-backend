@@ -1,8 +1,9 @@
 // The operator dashboard (ARCHITECTURE §6 `GET /reports/operator/:acoId`) and
 // its question-level table. Composes the scoring module's rows (keyed by the
-// survey node's code) with the survey tree the cycle pinned, the participant's
-// assessment funnel and the national airport table; never another operator's
-// figures. Every figure is in the selection's direction (SINGLE, IMPORT or EXPORT).
+// survey node's code) with the survey tree the cycle pinned and the
+// participant's assessment funnel; never another operator's figures, and no
+// airport ranking (that is the national report's). Every figure is in the
+// selection's direction (SINGLE, IMPORT or EXPORT).
 import type { RequestContext } from '../../core/auth/session.js';
 import { feedbackDistribution } from '../scoring/engine/index.js';
 
@@ -20,20 +21,15 @@ import {
 import type {
   AssessorStatsDto,
   CategoryReportDto,
-  NationalTableRowDto,
   OperatorQuestionsDto,
   OperatorReportDto,
   OperatorReportQuery,
   QuestionReportRowDto,
-  ReportDirection,
-  SurveyType,
 } from './reports.schemas.js';
 import { selectOperatorCycle, type OperatorSelection } from './reports.selection.js';
 import {
-  countActiveAirports,
   loadAirport,
   loadCycle,
-  loadNationalTable,
   loadScores,
   loadSubmittedAssessmentCounts,
   loadSubmittedCustomerAssessments,
@@ -111,26 +107,6 @@ function distributionOf(scores: ScoreSetView): OperatorReportDto['feedbackDistri
   return scores.distribution.length > 0 ? scores.distribution : feedbackDistribution([]);
 }
 
-/** The scoring module's national table, best first, with the operator's own airport flagged. */
-async function nationalTableOf(
-  cycleId: string,
-  surveyType: SurveyType,
-  direction: ReportDirection,
-  ownAirportId: string | null,
-): Promise<NationalTableRowDto[]> {
-  const rows = await loadNationalTable(cycleId, surveyType, direction);
-  return rows
-    .map((row) => ({
-      airportIata: row.iata,
-      airportName: row.name,
-      rating: round2(row.mean),
-      rank: row.rank,
-      rankOf: row.rankOf,
-      isOwn: ownAirportId !== null && row.airportId === ownAirportId,
-    }))
-    .sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.airportIata.localeCompare(b.airportIata));
-}
-
 async function comparisonOf(
   ctx: RequestContext,
   inputs: OperatorReportInputs,
@@ -161,12 +137,10 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
   const { cycle, participant, surveyType, direction, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
-  const [airport, nationalTable, comparison, assessments, airportsTotal] = await Promise.all([
+  const [airport, comparison, assessments] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
-    nationalTableOf(cycle.id, surveyType, direction, operator.airportId),
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
-    countActiveAirports(),
   ]);
 
   return {
@@ -188,8 +162,6 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
     byStakeholder: byTypeOf(overall),
     assessorStats: assessorStatsOf(participant),
     assessments,
-    nationalTable,
-    airportsTotal,
   };
 }
 

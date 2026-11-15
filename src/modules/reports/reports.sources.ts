@@ -5,7 +5,7 @@
 // one of those contracts is absorbed here.
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString } from '../../core/ids.js';
-import { findAirportById, findAirportsByIds, listAirports } from '../airports/airports.service.js';
+import { findAirportById, findAirportsByIds } from '../airports/airports.service.js';
 import { listSubmitted } from '../assessments/assessments.service.js';
 import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
@@ -380,11 +380,6 @@ export async function loadSubmittedAssessmentCounts(cycleId: string, acoId: stri
 }
 
 // --- organisations and airports -------------------------------------------
-
-/** Airports live on the platform (`active`), whichever of them took part in a cycle. */
-export async function countActiveAirports(): Promise<number> {
-  return (await listAirports({ page: 1, pageSize: 1, active: true })).meta.total;
-}
 
 function toOperatorView(doc: OrganisationDoc): OperatorView {
   return {

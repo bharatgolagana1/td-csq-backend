@@ -331,8 +331,6 @@ describe('reports over the real cycle, survey and assessment documents', () => {
       assessorStats: { total: 0, completed: 2, inProgress: 0, yetToStart: 0 },
       // Counted live from the real assessments module: two customers submitted, no self-assessment yet.
       assessments: { total: 2, customer: 2, self: 0 },
-      // The seeded Phase-I airports, whether or not they took part.
-      airportsTotal: 14,
     });
     expect(new Date(report.cycle.assessment.start).getTime()).toBeGreaterThan(Date.now());
     expect(report.feedbackDistribution).toEqual([
@@ -356,10 +354,8 @@ describe('reports over the real cycle, survey and assessment documents', () => {
       },
       { id: nodeIds.PROC, code: 'PROC', name: 'Processes', customer: { mean: 4.2, n: 2 }, self: { mean: null }, previous: null, delta: null, subcategories: [] },
     ]);
-    expect(report.nationalTable).toEqual([
-      { airportIata: 'DEL', airportName: 'Indira Gandhi International Airport', rating: 4.25, rank: 1, rankOf: 1, isOwn: true },
-      { airportIata: 'BOM', airportName: 'Chhatrapati Shivaji Maharaj International Airport', rating: null, rank: null, rankOf: 1, isOwn: false },
-    ]);
+    // No airport ranking on an operator's dashboard (the national report is ACFI's).
+    expect(report).not.toHaveProperty('nationalTable');
     expect(JSON.stringify(report)).not.toContain('Bravo');
   });
 

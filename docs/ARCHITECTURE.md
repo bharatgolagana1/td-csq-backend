@@ -313,7 +313,7 @@ registration link session), or a task code. All `[list]` endpoints accept
 ### scoring and reports
 - `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`); the summary lists the `directions` scored.
 - **Direction.** Every report below takes `direction?: IMPORT|EXPORT`, resolved per cycle: a SINGLE cycle reports `SINGLE` (the parameter is ignored), an IMPORT_EXPORT cycle the requested side, `IMPORT` when omitted. Every report response carries the resolved `direction: SINGLE|IMPORT|EXPORT`, and its `cycle` summary the cycle's `answerMode`. Reports read scores only through the scoring module's `getScores` / `getAirportScores` / `nationalTable`, each given the direction.
-- `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, assessments { total, customer, self } (SUBMITTED assessments by kind, counted live), nationalTable: [{ airportIata, airportName, rating, rank, rankOf, isOwn }] (`isOwn` on the operator's airport), airportsTotal }` (`airportsTotal` = active, i.e. Phase-I, airports on the platform, so the UI can say "+ N more airports live")
+- `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart }, assessments { total, customer, self } (SUBMITTED assessments by kind, counted live) }`. No airport ranking: the operator sees its own `rank` of `rankOf` only; the airports ranked are the national report's.
 - `GET /reports/operator/:acoId/questions?cycleId=` → question-level table with comments count
 - `GET /reports/airport/:airportId?cycleId=` `reports.airport` → weighted airport score, operators table (platform/airport only), categories
 - `GET /reports/national?cycleId=&surveyType=` `reports.national` → airports ranked, operators ranked, category averages, participation
@@ -390,8 +390,9 @@ registration link session), or a task code. All `[list]` endpoints accept
   direction the cycle's mode no longer produces. Previous-cycle values compare
   like with like: IMPORT with the previous cycle's IMPORT, none when that
   cycle has no rows in the direction.
-- **Confidentiality.** An ACO reads only its own operator report; the national
-  table it sees carries airport ratings and ranks, never another operator's
+- **Confidentiality.** An ACO reads only its own operator report, which
+  carries its own rank among the operators and no airport ranking (the
+  national report, `reports.national`, is ACFI's); never another operator's
   figures. Platform roles see everything. Individual customer assessments are
   further guarded by two tasks beyond `assessments.view`:
   `assessments.scores` (each customer assessment's own score in the history)
