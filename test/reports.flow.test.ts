@@ -16,6 +16,7 @@ import { getOrCreateForInvitation, patchAnswers, submit } from '../src/modules/a
 import { registerCycleHandlers } from '../src/modules/cycles/cycles.handlers.js';
 import { getParticipant } from '../src/modules/cycles/cycles.service.js';
 import { fromInstant } from '../src/modules/cycles/domain/windows.js';
+import { InvitationModel } from '../src/modules/invitations/invitations.model.js';
 import { setCurrentShare } from '../src/modules/organisations/market-share.service.js';
 
 import { createTestCustomer, createTestSurvey, remarkEverySection, type TestSurvey } from './assessments.fixtures.js';
@@ -165,9 +166,31 @@ async function transition(to: string): Promise<void> {
   expect(res.body.data.status).toBe(to);
 }
 
+/** An invitation as the invitations module leaves it (only cycles listens in this file, so nothing moves it). */
+async function insertInvitation(acoId: string, customerId: string, surveyType: 'DOMESTIC' | 'INTERNATIONAL', state: 'PENDING' | 'SUBMITTED', invitationId = newId()): Promise<void> {
+  const at = state === 'PENDING' ? null : new Date();
+  await InvitationModel.create({
+    _id: invitationId,
+    cycleId: toId(cycleId),
+    acoId: toId(acoId),
+    airportId: toId(del),
+    customerId: toId(customerId),
+    surveyType,
+    state,
+    email: `${customerId}@${surveyType.toLowerCase()}.test`,
+    customer: { name: 'Assessor', contactPerson: 'Contact', type: 'FF' },
+    sentAt: at,
+    openedAt: at,
+    verifiedAt: at,
+    submittedAt: at,
+    expiresAt: new Date(Date.now() + 31 * DAY),
+  });
+}
+
 /** One customer's assessment, created as the invitations flow would and submitted through its link session. */
 async function submitCustomerAssessment(acoId: string, customerId: string, answers: AnswerInput[]): Promise<string> {
   const invitationId = newId();
+  await insertInvitation(acoId, customerId, 'DOMESTIC', 'SUBMITTED', invitationId);
   const created = await getOrCreateForInvitation({ _id: invitationId, cycleId, acoId, customerId, surveyType: 'DOMESTIC' });
   await patchAnswers(created.id, answers);
   await remarkEverySection(created.id);
@@ -305,6 +328,10 @@ beforeAll(async () => {
     { questionId: q['Q.LOW']!, rating: 2, comment: 'Slow' },
     { questionId: q['Q.PLAIN']!, rating: 3 },
   ]);
+  // Neither counts as sent on the Domestic dashboard: one waits for the window, the other is another survey's.
+  const ff3 = await createTestCustomer({ acoId: a, airportId: del, name: 'FF Three', contactPerson: 'Lata Iyer', email: 'lata@ff-three.test', type: 'FF' });
+  await insertInvitation(a, ff3, 'DOMESTIC', 'PENDING');
+  await insertInvitation(a, ff1, 'INTERNATIONAL', 'SUBMITTED');
   seedScores();
 });
 afterAll(() => t.close());
@@ -328,7 +355,8 @@ describe('reports over the real cycle, survey and assessment documents', () => {
       overall: { customer: { mean: 4.25, n: 2 }, self: { mean: 4.5 }, rank: 1, rankOf: 1 },
       comparison: { current: { cycleId, customer: 4.25, self: 4.5 }, previous: null },
       byStakeholder: { FF: { mean: 4.25, n: 1 }, CB: { mean: 4.25, n: 1 } },
-      assessorStats: { total: 0, completed: 2, inProgress: 0, yetToStart: 0, readyToSend: 0 },
+      // From the Domestic invitations only: two sent and submitted, one ready to send; the International one is left out.
+      assessorStats: { total: 2, completed: 2, inProgress: 0, yetToStart: 0, readyToSend: 1 },
       // Counted live from the real assessments module: two customers submitted, no self-assessment yet.
       assessments: { total: 2, customer: 2, self: 0 },
     });
@@ -410,7 +438,7 @@ describe('reports over the real cycle, survey and assessment documents', () => {
     const res = await superAdmin.get('/api/v1/reports/national');
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data).toMatchObject({ cycle: { id: cycleId }, surveyType: 'DOMESTIC', provisional: true });
-    expect(res.body.data.participation).toEqual({ airports: 2, operators: 3, sampleLocked: 0, invited: 0, readyToSend: 0, started: 0, completed: 3, pending: 0, completionRate: 0 });
+    expect(res.body.data.participation).toEqual({ airports: 2, operators: 3, sampleLocked: 0, invited: 3, readyToSend: 1, started: 3, completed: 3, pending: 0, completionRate: 100 });
     expect((res.body.data.operators as { code: string; rating: number | null; rank: number | null }[]).map((o) => [o.code, o.rating, o.rank])).toEqual([
       ['RPTF-A', 4.25, 1],
       ['RPTF-B', null, null],

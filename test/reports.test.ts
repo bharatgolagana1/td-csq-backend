@@ -10,6 +10,7 @@ import { idString } from '../src/core/ids.js';
 import type {
   AirportScoreView,
   CycleView,
+  InvitationFunnelView,
   NationalRowView,
   ParticipantView,
   ScoreLevel,
@@ -34,8 +35,8 @@ const store = vi.hoisted(() => ({
   assessments: new Map<string, SubmittedAssessmentView[]>(),
   /** SUBMITTED self-assessments per `cycle:aco:surveyType` (the customer ones are counted from `assessments`). */
   selfSubmitted: new Map<string, number>(),
-  /** PENDING invitations (locked, not sent yet) per `cycle:aco`. */
-  readyToSend: new Map<string, number>(),
+  /** The invitations' funnel per `cycle:aco:surveyType` (ready to send = PENDING, locked but not sent yet). */
+  funnels: new Map<string, Partial<InvitationFunnelView>>(),
 }));
 
 vi.mock('../src/modules/reports/reports.sources.js', async () => {
@@ -91,8 +92,15 @@ vi.mock('../src/modules/reports/reports.sources.js', async () => {
       const self = store.selfSubmitted.get(`${cycleId}:${acoId}:${surveyType}`) ?? 0;
       return { total: customer + self, customer, self };
     },
-    loadReadyToSend: async (cycleId: string, acoId?: string) =>
-      [...store.readyToSend].filter(([key]) => key.startsWith(`${cycleId}:${acoId ?? ''}`)).reduce((sum, [, count]) => sum + count, 0),
+    loadInvitationFunnel: async (cycleId: string, surveyType: string, acoId?: string) => {
+      const total: InvitationFunnelView = { readyToSend: 0, invited: 0, started: 0, completed: 0 };
+      for (const [key, funnel] of store.funnels) {
+        const [inCycle, ofAco, ofType] = key.split(':');
+        if (inCycle !== cycleId || ofType !== surveyType || (acoId !== undefined && ofAco !== acoId)) continue;
+        for (const field of Object.keys(total) as (keyof InvitationFunnelView)[]) total[field] += funnel[field] ?? 0;
+      }
+      return total;
+    },
     loadOperator: async (acoId: string) => {
       const doc = await findOrganisationById(acoId);
       return doc?.type === 'ACO'
@@ -228,7 +236,6 @@ function participant(cycleId: string, acoId: string, airportId: string, patch: P
     airportId,
     surveyTypes: ['DOMESTIC'],
     sampling: { status: 'LOCKED', selectedCount: 50 },
-    stats: { invited: 0, started: 0, completed: 0 },
     ...patch,
   };
 }
@@ -271,14 +278,22 @@ function seedFixtures(): void {
   store.cycles.set(CYCLE.draft, cycle(CYCLE.draft, { code: 'CSQ-2027-1', name: 'Cycle 2027 H1', type: 'DOMESTIC', status: 'DRAFT', createdAt: new Date('2026-10-01T00:00:00Z'), surveyVersions: {} }));
 
   store.participants.push(
-    participant(CYCLE.prev, a, del, { stats: { invited: 10, started: 8, completed: 6 } }),
-    participant(CYCLE.prev, b, del, { stats: { invited: 10, started: 10, completed: 9 } }),
-    participant(CYCLE.scored, a, del, { surveyTypes: ['DOMESTIC', 'INTERNATIONAL'], stats: { invited: 20, started: 12, completed: 8 } }),
-    participant(CYCLE.scored, b, del, { stats: { invited: 10, started: 10, completed: 10 } }),
-    participant(CYCLE.scored, c, bom, { sampling: { status: 'IN_PROGRESS', selectedCount: 12 }, stats: { invited: 5, started: 1, completed: 1 } }),
-    participant(CYCLE.live, a, del, { stats: { invited: 30, started: 5, completed: 2 } }),
+    participant(CYCLE.prev, a, del),
+    participant(CYCLE.prev, b, del),
+    participant(CYCLE.scored, a, del, { surveyTypes: ['DOMESTIC', 'INTERNATIONAL'] }),
+    participant(CYCLE.scored, b, del),
+    participant(CYCLE.scored, c, bom, { sampling: { status: 'IN_PROGRESS', selectedCount: 12 } }),
+    participant(CYCLE.live, a, del),
     participant(CYCLE.live, d, hyd),
   );
+  store.funnels.set(`${CYCLE.prev}:${a}:DOMESTIC`, { invited: 10, started: 8, completed: 6 });
+  store.funnels.set(`${CYCLE.prev}:${b}:DOMESTIC`, { invited: 10, started: 10, completed: 9 });
+  // Alpha runs both surveys of the BOTH cycle: each report counts its own type's invitations only.
+  store.funnels.set(`${CYCLE.scored}:${a}:DOMESTIC`, { invited: 20, started: 12, completed: 8 });
+  store.funnels.set(`${CYCLE.scored}:${a}:INTERNATIONAL`, { invited: 6, started: 5, completed: 4 });
+  store.funnels.set(`${CYCLE.scored}:${b}:DOMESTIC`, { invited: 10, started: 10, completed: 10 });
+  store.funnels.set(`${CYCLE.scored}:${c}:DOMESTIC`, { invited: 5, started: 1, completed: 1 });
+  store.funnels.set(`${CYCLE.live}:${a}:DOMESTIC`, { invited: 30, started: 5, completed: 2 });
 
   store.trees.set('S0', tree('S0'));
   store.trees.set('S1', tree('S1'));
@@ -462,13 +477,26 @@ describe('GET /reports/operator/:acoId', () => {
   });
 
   it('counts the invitations ready to send beside the assessor funnel, which counts e-mails sent', async () => {
-    store.readyToSend.set(`${CYCLE.live}:${a}`, 7);
-    store.readyToSend.set(`${CYCLE.live}:${d}`, 5);
+    store.funnels.set(`${CYCLE.live}:${a}:DOMESTIC`, { invited: 30, started: 5, completed: 2, readyToSend: 7 });
+    store.funnels.set(`${CYCLE.live}:${d}:DOMESTIC`, { readyToSend: 5 });
     try {
       const res = await adminA.get(`/api/v1/reports/operator/${a}?cycleId=${CYCLE.live}`);
       expect(res.body.data.assessorStats).toEqual({ total: 30, completed: 2, inProgress: 3, yetToStart: 25, readyToSend: 7 });
     } finally {
-      store.readyToSend.clear();
+      store.funnels.set(`${CYCLE.live}:${a}:DOMESTIC`, { invited: 30, started: 5, completed: 2 });
+      store.funnels.delete(`${CYCLE.live}:${d}:DOMESTIC`);
+    }
+  });
+
+  it('counts the assessor funnel of the survey type shown, never the other type of a BOTH cycle', async () => {
+    store.funnels.set(`${CYCLE.scored}:${a}:INTERNATIONAL`, { invited: 6, started: 5, completed: 4, readyToSend: 2 });
+    try {
+      const domestic = await adminA.get(`/api/v1/reports/operator/${a}?cycleId=${CYCLE.scored}&surveyType=DOMESTIC`);
+      expect(domestic.body.data.assessorStats).toEqual({ total: 20, completed: 8, inProgress: 4, yetToStart: 8, readyToSend: 0 });
+      const international = await adminA.get(`/api/v1/reports/operator/${a}?cycleId=${CYCLE.scored}&surveyType=INTERNATIONAL`);
+      expect(international.body.data.assessorStats).toEqual({ total: 6, completed: 4, inProgress: 1, yetToStart: 1, readyToSend: 2 });
+    } finally {
+      store.funnels.set(`${CYCLE.scored}:${a}:INTERNATIONAL`, { invited: 6, started: 5, completed: 4 });
     }
   });
 
@@ -624,15 +652,24 @@ describe('GET /reports/national', () => {
   });
 
   it('counts the invitations ready to send across the cycle beside the e-mails sent', async () => {
-    store.readyToSend.set(`${CYCLE.live}:${a}`, 7);
-    store.readyToSend.set(`${CYCLE.live}:${d}`, 5);
-    store.readyToSend.set(`${CYCLE.scored}:${a}`, 100);
+    store.funnels.set(`${CYCLE.live}:${a}:DOMESTIC`, { invited: 30, started: 5, completed: 2, readyToSend: 7 });
+    store.funnels.set(`${CYCLE.live}:${d}:DOMESTIC`, { readyToSend: 5 });
+    store.funnels.set(`${CYCLE.scored}:${a}:DOMESTIC`, { invited: 20, started: 12, completed: 8, readyToSend: 100 });
     try {
       const live = await superAdmin.get(`/api/v1/reports/national?cycleId=${CYCLE.live}`);
       expect(live.body.data.participation).toMatchObject({ invited: 30, readyToSend: 12 });
     } finally {
-      store.readyToSend.clear();
+      store.funnels.set(`${CYCLE.live}:${a}:DOMESTIC`, { invited: 30, started: 5, completed: 2 });
+      store.funnels.delete(`${CYCLE.live}:${d}:DOMESTIC`);
+      store.funnels.set(`${CYCLE.scored}:${a}:DOMESTIC`, { invited: 20, started: 12, completed: 8 });
     }
+  });
+
+  it('counts the participation of the survey type shown: its operators, airports and invitations only', async () => {
+    const res = await superAdmin.get(`/api/v1/reports/national?cycleId=${CYCLE.scored}&surveyType=INTERNATIONAL`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.participation).toEqual({ airports: 1, operators: 1, sampleLocked: 1, invited: 6, readyToSend: 0, started: 5, completed: 4, pending: 2, completionRate: 66.67 });
+    expect((res.body.data.operators as { code: string }[]).map((row) => row.code)).toEqual(['RPT-A']);
   });
 
   it('defaults to the newest scored cycle; lists unscored airports from the participants; requires the reports.national task', async () => {

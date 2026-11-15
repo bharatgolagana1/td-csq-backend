@@ -9,7 +9,7 @@ import { findAirportById, findAirportsByIds } from '../airports/airports.service
 import { listSubmitted } from '../assessments/assessments.service.js';
 import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
-import { countPendingInvitations } from '../invitations/invitations.service.js';
+import { countInvitationFunnel } from '../invitations/invitations.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { OVERALL_REF_ID, type DistributionBucket, type Rating } from '../scoring/engine/index.js';
@@ -44,13 +44,17 @@ export interface CycleView extends CycleRef {
   surveyVersions: Partial<Record<SurveyType, string>>;
 }
 
+/**
+ * A cycle participant. Its `stats` counters are left out on purpose: they sum
+ * every survey type the operator runs, and every report is per survey type
+ * (`loadInvitationFunnel` counts per type).
+ */
 export interface ParticipantView {
   cycleId: string;
   acoId: string;
   airportId: string;
   surveyTypes: SurveyType[];
   sampling: { status: string; selectedCount: number };
-  stats: { invited: number; started: number; completed: number };
 }
 
 export type ScoreLevel = 'QUESTION' | 'SUBCATEGORY' | 'CATEGORY' | 'OVERALL';
@@ -225,7 +229,6 @@ function toParticipantView(dto: ParticipantDto): ParticipantView {
     airportId: dto.airportId,
     surveyTypes: [...dto.surveyTypes],
     sampling: { status: dto.sampling.status, selectedCount: dto.sampling.selectedCount },
-    stats: { invited: dto.stats.invited, started: dto.stats.started, completed: dto.stats.completed },
   };
 }
 
@@ -380,10 +383,24 @@ export async function loadSubmittedAssessmentCounts(cycleId: string, acoId: stri
   return { total: docs.length, customer: docs.length - self, self };
 }
 
-/** Invitations prepared at lock and not sent yet (they go out when the assessment window opens), for one operator or the whole cycle. */
-export async function loadReadyToSend(cycleId: string, acoId?: string): Promise<number> {
-  const rows = await countPendingInvitations([cycleId], { acoId });
-  return rows.reduce((sum, row) => sum + row.count, 0);
+// --- invitations -----------------------------------------------------------
+
+/** The assessor funnel of one survey type, counted from the invitations. */
+export interface InvitationFunnelView {
+  /** Prepared at lock, not sent yet: they go out when the assessment window opens. */
+  readyToSend: number;
+  /** Invitation e-mails sent. */
+  invited: number;
+  /** Assessors who verified their code (finished ones included). */
+  started: number;
+  /** Assessments submitted. */
+  completed: number;
+}
+
+/** One survey type's funnel, for one operator or the whole cycle. */
+export async function loadInvitationFunnel(cycleId: string, surveyType: SurveyType, acoId?: string): Promise<InvitationFunnelView> {
+  const funnel = await countInvitationFunnel(cycleId, { acoId, surveyType });
+  return { readyToSend: funnel.readyToSend, invited: funnel.invited, started: funnel.started, completed: funnel.completed };
 }
 
 // --- organisations and airports -------------------------------------------

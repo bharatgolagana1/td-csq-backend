@@ -7,7 +7,7 @@ import type { ClientSession, FilterQuery, Types } from 'mongoose';
 import type { RequestContext } from '../../core/auth/session.js';
 import { requestContextOf, systemContext, type AnyContext } from '../../core/auth/system.js';
 import { AppError } from '../../core/errors.js';
-import { emit, type Events } from '../../core/events.js';
+import { emit, type Events, type SurveyType } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
@@ -477,6 +477,39 @@ export async function countPendingInvitations(cycleIds: readonly string[], scope
     { $group: { _id: { cycleId: '$cycleId', acoId: '$acoId' }, count: { $sum: 1 } } },
   ]);
   return rows.map((row) => ({ cycleId: idString(row._id.cycleId), acoId: idString(row._id.acoId), count: row.count }));
+}
+
+/** One cycle's assessor funnel, counted from the invitations. */
+export interface InvitationFunnelCount {
+  /** PENDING: prepared at lock, e-mailed when the assessment window opens. */
+  readyToSend: number;
+  /** E-mailed at least once (`sentAt` set), whatever happened since — what `cycle_participants.stats.invited` counts. */
+  invited: number;
+  /** Verified at least once (`verifiedAt` set) — `stats.started`. */
+  started: number;
+  /** SUBMITTED — `stats.completed`. */
+  completed: number;
+}
+
+const isSet = (field: string) => ({ $cond: [{ $eq: [{ $ifNull: [field, null] }, null] }, 0, 1] });
+const inState = (state: InvitationState) => ({ $cond: [{ $eq: ['$state', state] }, 1, 0] });
+
+/**
+ * The funnel of one cycle, optionally for one operator and one survey type.
+ * `cycle_participants.stats` holds the same three counters per participant,
+ * summed over every survey type it runs; the invitations carry their survey
+ * type, so a per-survey report counts here.
+ */
+export async function countInvitationFunnel(cycleId: string, scope: { acoId?: string | undefined; surveyType?: SurveyType | undefined } = {}): Promise<InvitationFunnelCount> {
+  const filter: FilterQuery<InvitationDoc> = { cycleId: toId(cycleId, 'cycleId') };
+  if (scope.acoId !== undefined) filter.acoId = toId(scope.acoId, 'acoId');
+  if (scope.surveyType !== undefined) filter.surveyType = scope.surveyType;
+  const [row] = await InvitationModel.aggregate<InvitationFunnelCount>([
+    { $match: filter },
+    { $group: { _id: null, readyToSend: { $sum: inState('PENDING') }, invited: { $sum: isSet('$sentAt') }, started: { $sum: isSet('$verifiedAt') }, completed: { $sum: inState('SUBMITTED') } } },
+    { $project: { _id: 0, readyToSend: 1, invited: 1, started: 1, completed: 1 } },
+  ]);
+  return row ?? { readyToSend: 0, invited: 0, started: 0, completed: 0 };
 }
 
 // --- signed-in: list, resend, revoke ---------------------------------------------------
