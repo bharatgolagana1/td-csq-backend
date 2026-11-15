@@ -1,7 +1,7 @@
 // Everything reports reads from the lower features, in the shapes the report
 // builders consume. This is the only file in the module that imports another
-// feature's service (WAVE1-BRIEF §2: cycles, assessments, scoring, surveys,
-// organisations, airports); the builders never see a lower DTO, so a change in
+// feature's service (WAVE1-BRIEF §2: cycles, invitations, assessments, scoring,
+// surveys, organisations, airports); the builders never see a lower DTO, so a change in
 // one of those contracts is absorbed here.
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString } from '../../core/ids.js';
@@ -9,6 +9,7 @@ import { findAirportById, findAirportsByIds } from '../airports/airports.service
 import { listSubmitted } from '../assessments/assessments.service.js';
 import { getCycle, listCycles } from '../cycles/cycles.service.js';
 import { getParticipant, listParticipants } from '../cycles/participants.service.js';
+import { countPendingInvitations } from '../invitations/invitations.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { OVERALL_REF_ID, type DistributionBucket, type Rating } from '../scoring/engine/index.js';
@@ -377,6 +378,12 @@ export async function loadSubmittedAssessmentCounts(cycleId: string, acoId: stri
   const docs = (await listSubmitted(cycleId, acoId)).filter((doc) => doc.surveyType === surveyType);
   const self = docs.filter((doc) => doc.kind === 'SELF').length;
   return { total: docs.length, customer: docs.length - self, self };
+}
+
+/** Invitations prepared at lock and not sent yet (they go out when the assessment window opens), for one operator or the whole cycle. */
+export async function loadReadyToSend(cycleId: string, acoId?: string): Promise<number> {
+  const rows = await countPendingInvitations([cycleId], { acoId });
+  return rows.reduce((sum, row) => sum + row.count, 0);
 }
 
 // --- organisations and airports -------------------------------------------

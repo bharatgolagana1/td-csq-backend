@@ -483,6 +483,14 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expect(locked.body.data).toEqual([expect.objectContaining({ acoId: acoA, sampling: expect.objectContaining({ status: 'LOCKED', selectedCount: 3 }) })]);
     const monitoring = await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`);
     expect(monitoring.body.data.sampling).toMatchObject({ airports: 2, operators: 2, sampleLocked: 3, lockedOperators: 1 });
+    // Nothing is e-mailed before the assessment window opens: the three invitations are ready to send.
+    expect(monitoring.body.data.assessment).toMatchObject({ invited: 0, readyToSend: 3 });
+    expect(monitoring.body.data.byAirport.flatMap((airport: { operators: { acoId: string; invited: number; readyToSend: number }[] }) => airport.operators.map((o) => [o.acoId, o.invited, o.readyToSend]))).toEqual([
+      [acoA, 0, 3],
+      [acoB, 0, 0],
+    ]);
+    expect((await superAdmin.get(`${API}/cycles?q=CSQ-DEMO-2026`)).body.data[0].progress).toEqual({ locked: 1, invited: 0, readyToSend: 3, completed: 0 });
+    expect((await adminA.get(`${API}/cycles/current`)).body.data[0].cycle.progress).toMatchObject({ invited: 0, readyToSend: 3 });
     expect((await adminA.get(`${API}/cycles/current`)).body.data[0].nextDeadline).toEqual({ kind: 'ASSESSMENT_OPENS', at: assessmentStart.toISOString() });
     expect(recipientsOf(await mailLog(), 'sample-locked')).toEqual(['arjun@deccan.test']);
   });
@@ -523,7 +531,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       tokens.set(mail.to, match![1]!);
     }
     expect([...tokens.keys()].sort()).toEqual(['anita@alphaff.test', 'gita@gamma.test', 'rahul@bharatchb.test']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 0, completed: 0, pending: 3, completionRate: 0 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 0, completed: 0, pending: 3, completionRate: 0 });
   });
 
   it('13 · the clock sends the first assessment reminder two days in, with a fresh link each; the first link keeps working', async () => {
@@ -642,7 +650,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     expect((await t.anon.get(`${PUBLIC}/${token}`)).body.data.state).toBe('SUBMITTED');
     expect((await adminA.get(`${API}/invitations?cycleId=${cycleId}&state=SUBMITTED`)).body.meta.total).toBe(1);
     expect(recipientsOf(await mailLog(), 'assessment-thank-you')).toEqual(['anita@alphaff.test']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 1, completed: 1, pending: 2, completionRate: 33.3 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 1, completed: 1, pending: 2, completionRate: 33.3 });
   });
 
   it('16 · the other two participants complete theirs through the same link flow; every invitation is SUBMITTED', async () => {
@@ -650,7 +658,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     await completeThroughLink('gita@gamma.test', 3, 'FF');
 
     expect((await adminA.get(`${API}/invitations?cycleId=${cycleId}`)).body.data.map((row: { state: string }) => row.state)).toEqual(['SUBMITTED', 'SUBMITTED', 'SUBMITTED']);
-    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, started: 3, completed: 3, pending: 0, completionRate: 100 });
+    expect((await superAdmin.get(`${API}/cycles/${cycleId}/monitoring`)).body.data.assessment).toEqual({ invited: 3, readyToSend: 0, started: 3, completed: 3, pending: 0, completionRate: 100 });
 
     // The operator's history: masked assessors, and the NA-excluding score of each submission once the
     // operator's role is granted assessments.scores (not an operator default).
@@ -740,7 +748,7 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
       comparison: { current: { cycleId, cycleName: 'CSQ Demo 2026', customer: overallMean, self: 5 }, previous: null },
       // Two forwarders and one broker: each split is under `settings.scoring.minResponses` (3), so its mean stays hidden.
       byStakeholder: { FF: { mean: null, n: 2 }, CB: { mean: null, n: 1 } },
-      assessorStats: { total: 3, completed: 3, inProgress: 0, yetToStart: 0 },
+      assessorStats: { total: 3, completed: 3, inProgress: 0, yetToStart: 0, readyToSend: 0 },
       // "4 assessments · 1 self · 3 customer"
       assessments: { total: 4, customer: 3, self: 1 },
     });

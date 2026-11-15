@@ -1,13 +1,16 @@
 // What invitations listens to (WAVE1-BRIEF §2 "Who listens to what") and the
-// hook it registers into cycles. Called once per process by the registry.
+// hooks it registers into cycles. Called once per process by the registry.
 import { on, type EventMeta } from '../../core/events.js';
+import { registerPendingInvitationCounter } from '../cycles/pending-invitations.service.js';
 import { registerAssessmentReminderSender } from '../cycles/reminders.service.js';
 
-import { activateCycle, completeInvitation, createPendingForSamples, revokePending, sendReminders } from './invitations.service.js';
+import { activateCycle, completeInvitation, countPendingInvitations, createPendingForSamples, revokePending, sendReminders } from './invitations.service.js';
 
 export function registerInvitationHandlers(): void {
   // `POST /cycles/:id/reminders/send` with `kind: ASSESSMENT` sends the next reminder now.
   registerAssessmentReminderSender((cycleId, now, acoId) => sendReminders(cycleId, now, { acoId }));
+  // The cycle list and monitoring count what is ready to send before the assessment window opens.
+  registerPendingInvitationCounter(countPendingInvitations);
 
   // Inside the lock transaction: one PENDING invitation per locked sample, or the lock rolls back.
   on('sample.locked', 'invitations.onSampleLocked', async (payload, meta: EventMeta) => {

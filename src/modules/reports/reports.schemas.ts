@@ -82,10 +82,13 @@ export const feedbackBucket = z.object({
 });
 
 export const assessorStats = z.object({
+  /** Invitation e-mails sent. */
   total: z.number(),
   completed: z.number(),
   inProgress: z.number(),
   yetToStart: z.number(),
+  /** Invitations prepared at lock and not sent yet: they go out when the assessment window opens. */
+  readyToSend: z.number(),
 });
 export type AssessorStatsDto = z.infer<typeof assessorStats>;
 
@@ -227,7 +230,10 @@ export const nationalReportResponse = z.object({
     airports: z.number(),
     operators: z.number(),
     sampleLocked: z.number(),
+    /** Invitation e-mails sent. */
     invited: z.number(),
+    /** Invitations prepared at lock, sent when the assessment window opens. */
+    readyToSend: z.number(),
     started: z.number(),
     completed: z.number(),
     pending: z.number(),

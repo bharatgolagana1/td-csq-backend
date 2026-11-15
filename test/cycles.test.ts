@@ -21,6 +21,7 @@ import {
 } from '../src/modules/cycles/cycles.service.js';
 import { overridePublishedSurveyResolver } from '../src/modules/cycles/cycles.surveys.js';
 import { fromInstant, toInstant } from '../src/modules/cycles/domain/windows.js';
+import { pendingScopeOf, registerPendingInvitationCounter, type PendingInvitationScope } from '../src/modules/cycles/pending-invitations.service.js';
 import { registerAssessmentReminderSender } from '../src/modules/cycles/reminders.service.js';
 import { NotificationModel } from '../src/modules/notifications/notifications.model.js';
 import { setCurrentShare } from '../src/modules/organisations/market-share.service.js';
@@ -420,6 +421,45 @@ describe('participants, listeners and monitoring', () => {
     expect((await superAdmin.get(`${CYCLES}?status=DRAFT`)).body.meta.total).toBe(2);
   });
 
+  it('reports the invitations ready to send (prepared at lock, e-mailed when the assessment opens) from the counter invitations registers', async () => {
+    const asked: PendingInvitationScope[] = [];
+    const previous = registerPendingInvitationCounter(async (cycleIds, scope) => {
+      asked.push(scope);
+      if (!cycleIds.includes(cycle2)) return [];
+      return [
+        { cycleId: cycle2, acoId: acoA, count: 11 },
+        { cycleId: cycle2, acoId: acoC, count: 4 },
+      ];
+    });
+    try {
+      const monitoring = await superAdmin.get(`${CYCLES}/${cycle2}/monitoring`);
+      expect(monitoring.body.data.assessment).toMatchObject({ invited: 1, readyToSend: 15 });
+      const operators = (monitoring.body.data.byAirport as { operators: { code: string; invited: number; readyToSend: number }[] }[]).flatMap((airport) => airport.operators);
+      expect(operators.map((o) => [o.code, o.invited, o.readyToSend])).toEqual([
+        ['CY-A', 1, 11],
+        ['CY-B', 0, 0],
+        ['CY-C', 0, 4],
+      ]);
+      const list = await superAdmin.get(`${CYCLES}?q=live`);
+      expect(list.body.data[0].progress).toEqual({ locked: 1, invited: 1, readyToSend: 15, completed: 1 });
+      // A platform user counts everyone's.
+      expect(asked).toEqual([{}, {}]);
+    } finally {
+      registerPendingInvitationCounter(previous);
+    }
+    // The participant scope, as plain ids, is what the counter is asked for.
+    expect(pendingScopeOf({})).toEqual({});
+    expect(pendingScopeOf({ acoId: toId(acoA) })).toEqual({ acoId: acoA });
+    expect(pendingScopeOf({ airportId: toId(del) })).toEqual({ airportId: del });
+    // Without a counter nothing is ready to send.
+    const none = registerPendingInvitationCounter(null);
+    try {
+      expect((await superAdmin.get(`${CYCLES}/${cycle2}/monitoring`)).body.data.assessment.readyToSend).toBe(0);
+    } finally {
+      registerPendingInvitationCounter(none);
+    }
+  });
+
   it('POST /cycles/:id/reminders/send: SAMPLING to unlocked operators only; ASSESSMENT through the registered sender', async () => {
     const run = await superAdmin.post(`${CYCLES}/${cycle2}/reminders/send`).send({ kind: 'SAMPLING' });
     expect(run.status).toBe(200);
@@ -468,7 +508,7 @@ describe('ACO visibility and GET /cycles/current', () => {
     const list = await adminA.get(CYCLES);
     expect(list.status).toBe(200);
     expect(list.body.data.map((c: { code: string }) => c.code)).toEqual(['CSQ-2026-H2', 'CSQ-LIVE']);
-    expect(list.body.data[1].progress).toEqual({ locked: 1, invited: 1, completed: 1 });
+    expect(list.body.data[1].progress).toEqual({ locked: 1, invited: 1, readyToSend: 0, completed: 1 });
 
     const detail = await adminA.get(`${CYCLES}/${cycle2}`);
     expect(detail.status).toBe(200);

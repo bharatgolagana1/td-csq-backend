@@ -12,6 +12,7 @@ import {
   loadNationalTable,
   loadOperators,
   loadParticipants,
+  loadReadyToSend,
   loadScores,
   loadSurveyTree,
   OVERALL_REF_ID,
@@ -63,12 +64,13 @@ export async function nationalReport(ctx: RequestContext, query: NationalReportQ
   const typed = participants.filter((participant) => participant.surveyTypes.includes(surveyType));
   const surveyId = cycle.surveyVersions[surveyType];
 
-  const [airports, operators, operatorAirports, scores, tree] = await Promise.all([
+  const [airports, operators, operatorAirports, scores, tree, readyToSend] = await Promise.all([
     airportsRanked(cycle, surveyType, direction, participants),
     loadOperators(typed.map((participant) => participant.acoId)),
     loadAirports(typed.map((participant) => participant.airportId)),
     Promise.all(typed.map((participant) => loadScores(cycle.id, participant.acoId, surveyType, direction))),
     surveyId ? loadSurveyTree(surveyId) : EMPTY_TREE,
+    loadReadyToSend(cycle.id),
   ]);
   const indexed: Map<string, ScoreRowView>[] = scores.map((set) => indexRows(set.rows));
   const rankOf = Math.max(0, ...indexed.map((rows) => rowAt(rows, 'OVERALL', OVERALL_REF_ID)?.rankOf ?? 0));
@@ -116,6 +118,7 @@ export async function nationalReport(ctx: RequestContext, query: NationalReportQ
       operators: participants.length,
       sampleLocked: participants.filter((participant) => participant.sampling.status === 'LOCKED').length,
       invited,
+      readyToSend,
       started,
       completed,
       pending: Math.max(0, invited - completed),

@@ -60,8 +60,12 @@ export const cycleSummaryResponse = z.object({
   assessment: windowResponse,
   minSampleSize: z.number(),
   participants: z.object({ airports: z.number(), operators: z.number() }),
-  /** Over the participants the caller may see (PLATFORM all, ACO its own, AIRPORT its airport's). */
-  progress: z.object({ locked: z.number(), invited: z.number(), completed: z.number() }),
+  /**
+   * Over the participants the caller may see (PLATFORM all, ACO its own, AIRPORT its airport's).
+   * `invited` counts invitation e-mails sent; `readyToSend` the invitations prepared at lock that
+   * go out when the assessment window opens.
+   */
+  progress: z.object({ locked: z.number(), invited: z.number(), readyToSend: z.number(), completed: z.number() }),
   publishedAt: z.string().nullable(),
   scoredAt: z.string().nullable(),
   createdAt: z.string(),
@@ -132,7 +136,10 @@ export const monitoringResponse = z.object({
     lockedOperators: z.number(),
   }),
   assessment: z.object({
+    /** Invitation e-mails sent. */
     invited: z.number(),
+    /** Invitations prepared at lock, sent when the assessment window opens. */
+    readyToSend: z.number(),
     started: z.number(),
     completed: z.number(),
     pending: z.number(),
@@ -151,6 +158,7 @@ export const monitoringResponse = z.object({
           name: z.string(),
           sampling: z.object({ status: z.enum(SAMPLING_STATUSES), selectedCount: z.number(), required: z.number() }),
           invited: z.number(),
+          readyToSend: z.number(),
           started: z.number(),
           completed: z.number(),
         }),

@@ -30,6 +30,7 @@ import { selectOperatorCycle, type OperatorSelection } from './reports.selection
 import {
   loadAirport,
   loadCycle,
+  loadReadyToSend,
   loadScores,
   loadSubmittedAssessmentCounts,
   loadSubmittedCustomerAssessments,
@@ -89,9 +90,11 @@ function categoriesOf(tree: SurveyTreeView, rows: Map<string, ScoreRowView>): Ca
 /**
  * `started` counts every assessment opened, finished ones included. A completed
  * assessment was necessarily begun, so `begun` never trails `completed` even
- * when the opener was not counted; the funnel never goes negative.
+ * when the opener was not counted; the funnel never goes negative. `total`
+ * counts the invitations e-mailed; `readyToSend` those prepared at lock that
+ * wait for the assessment window.
  */
-function assessorStatsOf(participant: ParticipantView): AssessorStatsDto {
+function assessorStatsOf(participant: ParticipantView, readyToSend: number): AssessorStatsDto {
   const { invited, started, completed } = participant.stats;
   const begun = Math.max(started, completed);
   return {
@@ -99,6 +102,7 @@ function assessorStatsOf(participant: ParticipantView): AssessorStatsDto {
     completed,
     inProgress: begun - completed,
     yetToStart: Math.max(0, invited - begun),
+    readyToSend,
   };
 }
 
@@ -137,10 +141,11 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
   const { cycle, participant, surveyType, direction, provisional } = selection;
   const overall = rowAt(rows, 'OVERALL', OVERALL_REF_ID);
 
-  const [airport, comparison, assessments] = await Promise.all([
+  const [airport, comparison, assessments, readyToSend] = await Promise.all([
     operator.airportId ? loadAirport(operator.airportId) : null,
     comparisonOf(ctx, inputs, overall),
     loadSubmittedAssessmentCounts(cycle.id, operator.id, surveyType),
+    loadReadyToSend(cycle.id, operator.id),
   ]);
 
   return {
@@ -160,7 +165,7 @@ export async function operatorReport(ctx: RequestContext, acoId: string, query: 
     feedbackDistribution: distributionOf(scores),
     categories: categoriesOf(tree, rows),
     byStakeholder: byTypeOf(overall),
-    assessorStats: assessorStatsOf(participant),
+    assessorStats: assessorStatsOf(participant, readyToSend),
     assessments,
   };
 }
