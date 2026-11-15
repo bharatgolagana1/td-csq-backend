@@ -208,7 +208,11 @@ export async function setParticipantSampling(
   return (await toParticipantDtos([after]))[0] as ParticipantDto;
 }
 
-/** Adds `delta` (may be negative) to `stats.<field>`; the counter never drops below zero. */
+/**
+ * Adds `delta` (may be negative) to `stats.<field>`; the counter never drops
+ * below zero. One atomic update, so bumps from concurrent requests (customers
+ * verifying or submitting at the same moment) never lose a count.
+ */
 export async function bumpParticipantStats(
   cycleId: string,
   acoId: string,
@@ -218,10 +222,10 @@ export async function bumpParticipantStats(
 ): Promise<ParticipantDto> {
   if (!Number.isInteger(delta)) throw new AppError('VALIDATION', 'delta must be an integer', { delta });
   const before = await requireParticipantDoc(cycleId, acoId, session);
-  const next = Math.max(0, before.stats[field] + delta);
+  const path = `stats.${field}`;
   const after = await CycleParticipantModel.findOneAndUpdate(
     { _id: before._id },
-    { $set: { [`stats.${field}`]: next } },
+    [{ $set: { [path]: { $max: [0, { $add: [{ $ifNull: [`$${path}`, 0] }, delta] }] } } }],
     { new: true, ...(session ? { session } : {}) },
   ).lean<CycleParticipantDoc>();
   if (!after) throw new AppError('NOT_FOUND', 'Participant not found', { cycleId, acoId });

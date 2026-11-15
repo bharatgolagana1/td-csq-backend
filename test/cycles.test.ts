@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { systemContext } from '../src/core/auth/system.js';
+import { withTransaction } from '../src/core/db.js';
 import { clearEventHandlers, emit, on, type Events } from '../src/core/events.js';
 import { idString, toId } from '../src/core/ids.js';
 import { AuditModel } from '../src/modules/audit/audit.model.js';
@@ -375,6 +376,26 @@ describe('participants, listeners and monitoring', () => {
     expect(await getParticipant(cycle2, acoE)).toBeNull();
     expect((await listParticipants(cycle2)).map((p) => p.operator.code)).toEqual(['CY-A', 'CY-B', 'CY-C']);
     await expect(setParticipantSampling(cycle2, acoE, { status: 'LOCKED' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('bumpParticipantStats from concurrent requests loses no count', async () => {
+    const before = (await getParticipant(cycle2, acoB))?.stats.started ?? 0;
+    await Promise.all(Array.from({ length: 20 }, () => bumpParticipantStats(cycle2, acoB, 'started', 1)));
+    expect((await getParticipant(cycle2, acoB))?.stats.started).toBe(before + 20);
+    await bumpParticipantStats(cycle2, acoB, 'started', -20);
+  });
+
+  it('assessment.submitted in concurrent transactions: the write conflict on the participant is retried, not a 500', async () => {
+    const ctx = systemContext('test: concurrent submits');
+    const before = (await getParticipant(cycle2, acoB))?.stats.completed ?? 0;
+    const submits = Array.from({ length: 4 }, (_, i) =>
+      withTransaction((session) =>
+        emit('assessment.submitted', { assessmentId: `c${i}`, cycleId: cycle2, acoId: acoB, kind: 'CUSTOMER', surveyType: 'DOMESTIC' }, { ctx, session }),
+      ),
+    );
+    await expect(Promise.all(submits)).resolves.toHaveLength(4);
+    expect((await getParticipant(cycle2, acoB))?.stats.completed).toBe(before + 4);
+    await bumpParticipantStats(cycle2, acoB, 'completed', -4);
   });
 
   it('invitation.sent and assessment.submitted feed the participant; an unknown participant is tolerated', async () => {

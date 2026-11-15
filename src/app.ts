@@ -7,7 +7,7 @@ import type { Env } from './config/env.js';
 import type { TokenVerifier } from './core/auth/keycloak.js';
 import { createLinkSessions } from './core/auth/link.js';
 import { errorHandler, notFoundHandler } from './core/errors.js';
-import { logger } from './core/logger.js';
+import { logger, redactUrl } from './core/logger.js';
 import { requestId, requestIdOf } from './core/request-id.js';
 import { buildApiRouter } from './modules/index.js';
 import { configureNotifications } from './modules/notifications/notifications.service.js';
@@ -41,6 +41,13 @@ export function createApp({ env, verifyToken }: AppOptions): Express {
       logger,
       genReqId: (req) => requestIdOf(req as express.Request),
       autoLogging: { ignore: (req) => req.url === '/api/v1/health' },
+      // Headers and `:token` are redacted by the logger itself (LOG_REDACT).
+      serializers: {
+        req: (req: { url: string }) => {
+          req.url = redactUrl(req.url);
+          return req;
+        },
+      },
       customLogLevel: (_req, res, error) => (error || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'),
     }),
   );

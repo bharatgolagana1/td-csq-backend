@@ -5,7 +5,10 @@
 // error, so an emitting operation fails as a whole when a listener fails —
 // there is no fire-and-forget. When the emitter is inside a transaction it
 // passes the session on, and handlers must use it for their own writes.
-import type { ClientSession } from 'mongoose';
+// A transient transaction error (a write conflict with a concurrent request)
+// is rethrown as it is, not wrapped, so the driver's `withTransaction` still
+// sees its label and runs the whole transaction again.
+import mongoose, { type ClientSession } from 'mongoose';
 
 import type { AnyContext } from './auth/system.js';
 
@@ -72,9 +75,14 @@ export async function emit<K extends keyof Events>(event: K, payload: Events[K],
     try {
       await registration.handler(payload, meta);
     } catch (error) {
+      if (isTransientTransactionError(error)) throw error;
       throw new EventHandlerError(event, registration.name, error);
     }
   }
+}
+
+function isTransientTransactionError(error: unknown): boolean {
+  return error instanceof mongoose.mongo.MongoError && error.hasErrorLabel('TransientTransactionError');
 }
 
 export class EventHandlerError extends Error {
