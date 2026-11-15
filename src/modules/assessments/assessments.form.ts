@@ -241,6 +241,7 @@ export interface AnswerInput {
   direction?: AnswerDirection | undefined;
   rating?: number | null | undefined;
   na?: boolean | undefined;
+  /** SINGLE only: an IMPORT_EXPORT answer takes none (null or empty is accepted, any text refused). */
   comment?: string | null | undefined;
   followUp?: string[] | undefined;
 }
@@ -270,7 +271,26 @@ function isRating(value: number): value is Rating {
   return (RATINGS as readonly number[]).includes(value);
 }
 
-function validateOne(question: FormQuestion, input: AnswerInput, path: string): { answer: StoredAnswer } | { issues: AnswerIssue[] } {
+/** The comment rules of one answer: the question's comment mode on a SINGLE assessment; none taken at all on an IMPORT_EXPORT one. */
+function commentIssues(question: FormQuestion, comment: string | null, rating: Rating | null, answerMode: AnswerMode, path: string): AnswerIssue[] {
+  // An IMPORT_EXPORT form collects no per-question comment (its section remarks
+  // carry the free text). Refused rather than dropped, so a client never loses text silently.
+  if (answerMode === 'IMPORT_EXPORT') {
+    return comment === null ? [] : [{ path: `${path}.comment`, message: 'an import / export answer takes no comment; write it in the section remark' }];
+  }
+  const needsComment =
+    question.commentMode === 'REQUIRED' || (question.commentMode === 'REQUIRED_ON_LOW' && isLowRating(rating));
+  if (needsComment && comment === null) {
+    const why = question.commentMode === 'REQUIRED' ? 'this question' : 'a Fair or Poor rating';
+    return [{ path: `${path}.comment`, message: `a comment is required for ${why}` }];
+  }
+  if (question.commentMode === 'NONE' && comment !== null) {
+    return [{ path: `${path}.comment`, message: 'this question takes no comment' }];
+  }
+  return [];
+}
+
+function validateOne(question: FormQuestion, input: AnswerInput, answerMode: AnswerMode, path: string): { answer: StoredAnswer } | { issues: AnswerIssue[] } {
   const issues: AnswerIssue[] = [];
   const na = input.na ?? false;
   const rawRating = input.rating ?? null;
@@ -283,15 +303,7 @@ function validateOne(question: FormQuestion, input: AnswerInput, path: string): 
   else if (rating === null && !na) issues.push({ path: `${path}.rating`, message: 'needs a rating from 1 to 5 or NA' });
   if (rating !== null && na) issues.push({ path: `${path}.na`, message: 'a rating and NA are exclusive' });
 
-  const needsComment =
-    question.commentMode === 'REQUIRED' || (question.commentMode === 'REQUIRED_ON_LOW' && isLowRating(rating));
-  if (needsComment && comment === null) {
-    const why = question.commentMode === 'REQUIRED' ? 'this question' : 'a Fair or Poor rating';
-    issues.push({ path: `${path}.comment`, message: `a comment is required for ${why}` });
-  }
-  if (question.commentMode === 'NONE' && comment !== null) {
-    issues.push({ path: `${path}.comment`, message: 'this question takes no comment' });
-  }
+  issues.push(...commentIssues(question, comment, rating, answerMode, path));
 
   if (followUp.length > 0) {
     if (question.followUp === null) {
@@ -314,11 +326,12 @@ function validateOne(question: FormQuestion, input: AnswerInput, path: string): 
 
 /**
  * Validates a batch of answers against the form (§7 "Form rules"): the
- * question must be on the form, exactly one of rating / NA, a comment where
- * the comment mode demands it (and none where it forbids it), follow-up
- * options only on Fair / Poor and only from the question's list. An
- * IMPORT_EXPORT assessment needs the direction on every answer; a SINGLE one
- * takes none.
+ * question must be on the form, exactly one of rating / NA, follow-up
+ * options only on Fair / Poor and only from the question's list. A SINGLE
+ * assessment takes no direction, and a comment where the comment mode
+ * demands it (none where it forbids it). An IMPORT_EXPORT assessment needs
+ * the direction on every answer and takes no comment whatever the comment
+ * mode: an empty one is fine, a non-empty one is an issue.
  */
 export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInput[], answerMode: AnswerMode = 'SINGLE'): AnswerValidation {
   const byId = new Map(formQuestions(form).map((question) => [question.id, question]));
@@ -347,7 +360,7 @@ export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInp
       return;
     }
     seen.add(key);
-    const result = validateOne(question, input, path);
+    const result = validateOne(question, input, answerMode, path);
     if ('issues' in result) issues.push(...result.issues);
     else answers.push(result.answer);
   });

@@ -5,7 +5,8 @@
 // e-mail (`revealOtp`), the form, autosave, a remark per section and submit —
 // all through the invitations and assessments services so every event and
 // e-mail happens. An IMPORT_EXPORT cycle's assessors answer every question
-// twice, export a touch lower than import; each section still gets one remark.
+// twice, export a touch lower than import, without comments (the form takes
+// none); each section still gets one remark.
 import type { RequestContext } from '../../core/auth/session.js';
 import {
   formFromStakeholderForm,
@@ -84,7 +85,8 @@ function answerFor({ question, category }: FormQuestionPlace, profile: RatingPro
   const rating = ratingFor(quality, rng);
   const answer: AnswerInput = { questionId: question.id, rating };
   const low = rating <= 2;
-  if (question.commentMode !== 'NONE') {
+  // An IMPORT_EXPORT answer takes no comment; its section remark carries the free text.
+  if (options.answerMode !== 'IMPORT_EXPORT' && question.commentMode !== 'NONE') {
     if (low || question.commentMode === 'REQUIRED') {
       const pool = options.self ? SELF_COMMENTS : (LOW_RATING_COMMENTS[category.code] ?? GENERIC_LOW_COMMENTS);
       answer.comment = rng.pick(pool);
@@ -98,7 +100,7 @@ function answerFor({ question, category }: FormQuestionPlace, profile: RatingPro
   return answer;
 }
 
-/** Every answer `patchAnswers` needs for a complete form, with comments and follow-ups where the rules demand them. */
+/** Every answer `patchAnswers` needs for a complete form, with comments (SINGLE only) and follow-ups where the rules demand them. */
 export function generateAnswers(form: AssessmentForm, profile: RatingProfile, rng: Rng, options: AnswerOptions): AnswerInput[] {
   const mood = (rng.next() - 0.5) * 0.24;
   const places = formQuestionPlaces(form);

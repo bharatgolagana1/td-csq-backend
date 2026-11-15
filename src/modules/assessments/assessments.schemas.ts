@@ -136,6 +136,7 @@ export const answerInputSchema = z
     direction: z.enum(ANSWER_DIRECTIONS).optional(),
     rating: ratingSchema.nullable().optional(),
     na: z.boolean().optional(),
+    /** Per the question's comment mode on a SINGLE assessment; an IMPORT_EXPORT one takes none (the form refuses text). */
     comment: z.string().trim().max(2000).nullable().optional(),
     followUp: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
   })

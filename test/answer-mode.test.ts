@@ -1,7 +1,8 @@
 // Import / export answers end to end over the real modules: a SINGLE cycle
 // and an IMPORT_EXPORT cycle with the same two operators (DEL, BOM). Covers
-// the assessments inheriting the cycle's mode (answers per direction, one
-// remark per section whatever the mode, readiness, submit, history), scoring per direction (rows, ranks, airports,
+// the assessments inheriting the cycle's mode (answers per direction, no
+// comments on IMPORT_EXPORT, one remark per section whatever the mode,
+// readiness, submit, history), scoring per direction (rows, ranks, airports,
 // a mode switch dropping the other direction's rows, assessments of the other
 // mode ignored), the reports' direction resolution and the boot migration of
 // the score indexes.
@@ -20,7 +21,7 @@ import { ScoreModel } from '../src/modules/scoring/scores.model.js';
 import { getScores, nationalTable, runCycle } from '../src/modules/scoring/scoring.service.js';
 import { SettingsModel } from '../src/modules/settings/settings.model.js';
 
-import { createTestCustomer, createTestCycle, createTestSurvey, ctxOf, remarkEverySection, type TestCycle, type TestSurvey } from './assessments.fixtures.js';
+import { createTestCustomer, createTestCycle, createTestSurvey, ctxOf, FOLLOW_UP_OPTIONS, remarkEverySection, type TestCycle, type TestSurvey } from './assessments.fixtures.js';
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
 import { airportIdByIata, createTestOperator, expectError, grantTasks, revokeTasks } from './helpers/fixtures.js';
 
@@ -44,9 +45,13 @@ let single: TestCycle;
 let split: TestCycle;
 let splitA: string;
 
-/** Every FF question rated `rating` (with a comment, which Q.REQ and a low Q.LOW need), in one direction or none. */
+/**
+ * Every FF question rated `rating`, in one direction or none. Undirected
+ * (SINGLE) answers carry the comment Q.REQ and a low Q.LOW need; directed
+ * (IMPORT_EXPORT) ones none, as that form takes no comment.
+ */
 function answers(rating: number, direction?: 'IMPORT' | 'EXPORT'): AnswerInput[] {
-  return FF_QUESTIONS.map((code) => ({ questionId: survey.q[code] ?? code, ...(direction ? { direction } : {}), rating, comment: 'Noted' }));
+  return FF_QUESTIONS.map((code) => ({ questionId: survey.q[code] ?? code, ...(direction ? { direction } : { comment: 'Noted' }), rating }));
 }
 
 function invitation(cycle: TestCycle, acoId: string, customerId: string) {
@@ -120,7 +125,8 @@ describe('assessments of an IMPORT_EXPORT cycle', () => {
     expect(half.missing).toEqual(FF_QUESTIONS.map((code) => `${survey.q[code]}:EXPORT`));
     await expect(submit(ctxOf(superAdmin), splitA)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    // A second import batch replaces the first in place; export lands beside it.
+    // A second import batch replaces the first in place; export lands beside it — Fair on
+    // Q.REQ and on the REQUIRED_ON_LOW Q.LOW, and still no comment needed.
     await patchAnswers(splitA, answers(5, 'IMPORT'));
     expect(await patchAnswers(splitA, answers(2, 'EXPORT'))).toMatchObject({ answered: 8, total: 8, pct: 100 });
     // One remark per section, not per direction.
@@ -289,12 +295,13 @@ describe('report direction', () => {
     expect(questions.body.data).toMatchObject({ direction: 'EXPORT', cycle: { answerMode: 'IMPORT_EXPORT' } });
     // Every active question of the tree in survey order; Q.NONE is on the CB form only, so nobody answered it.
     const rows = questions.body.data.questions as { code: string; customer: { mean: number | null }; comments: number }[];
+    // An IMPORT_EXPORT answer takes no comment, so none are counted.
     expect(rows.map((row) => [row.code, row.customer.mean, row.comments])).toEqual([
-      ['Q.OPT', 2, 1],
-      ['Q.REQ', 2, 1],
-      ['Q.LOW', 2, 1],
+      ['Q.OPT', 2, 0],
+      ['Q.REQ', 2, 0],
+      ['Q.LOW', 2, 0],
       ['Q.NONE', null, 0],
-      ['Q.PLAIN', 2, 1],
+      ['Q.PLAIN', 2, 0],
     ]);
 
     const airport = await superAdmin.get(`/api/v1/reports/airport/${bom}?cycleId=${split.id}&direction=EXPORT`);
@@ -385,5 +392,64 @@ describe('migrateScoreDirections (boot)', () => {
       { collection: 'scores', backfilled: 0, droppedIndexes: [] },
       { collection: 'airport_scores', backfilled: 0, droppedIndexes: [] },
     ]);
+  });
+});
+
+describe('comments on an IMPORT_EXPORT assessment', () => {
+  it('are not collected: REQUIRED and REQUIRED_ON_LOW questions are saved, ready and submitted without one in either direction', async () => {
+    const { id } = await getOrCreateForInvitation(invitation(split, acoB, customerB));
+    const bare = (direction: 'IMPORT' | 'EXPORT'): AnswerInput[] => [
+      // Poor on the REQUIRED_ON_LOW question, with one of its follow-up options.
+      { questionId: survey.q['Q.LOW']!, direction, rating: 1, followUp: [FOLLOW_UP_OPTIONS[0]!] },
+      { questionId: survey.q['Q.OPT']!, direction, rating: 4, comment: null },
+      { questionId: survey.q['Q.REQ']!, direction, rating: 2 },
+      // An empty comment is no comment.
+      { questionId: survey.q['Q.PLAIN']!, direction, na: true, comment: '   ' },
+    ];
+    expect(await patchAnswers(id, [...bare('IMPORT'), ...bare('EXPORT')])).toMatchObject({ answered: 8, total: 8, pct: 100 });
+    await remarkEverySection(id);
+    expect(await readiness(id)).toEqual({ answered: 8, total: 8, missing: [], missingSectionRemarks: [], complete: true });
+    expect(await submit(ctxOf(superAdmin), id)).toMatchObject({ status: 'SUBMITTED', answerMode: 'IMPORT_EXPORT' });
+    const stored = await AssessmentModel.findById(id).lean();
+    expect(stored!.answers).toHaveLength(8);
+    expect(stored!.answers.every((answer) => answer.comment === null)).toBe(true);
+    expect(stored!.answers.filter((answer) => answer.followUp.length > 0).map((answer) => answer.direction)).toEqual(['IMPORT', 'EXPORT']);
+  });
+
+  it('refuses a comment with a VALIDATION issue instead of dropping it, whatever the comment mode; the follow-up rule still holds per direction', async () => {
+    const path = `/api/v1/assessments/self/${split.id}/DOMESTIC/answers`;
+    const refused = await adminA.patch(path).send({
+      answers: [
+        { questionId: survey.q['Q.REQ'], direction: 'IMPORT', rating: 2, comment: 'Slow at the export dock' },
+        { questionId: survey.q['Q.OPT'], direction: 'EXPORT', rating: 5, comment: 'Quick' },
+        { questionId: survey.q['Q.NONE'], direction: 'EXPORT', rating: 3, comment: 'Fine' },
+        { questionId: survey.q['Q.LOW'], direction: 'EXPORT', rating: 4, followUp: [FOLLOW_UP_OPTIONS[0]] },
+      ],
+    });
+    expect(expectError(refused, 400, 'VALIDATION').details).toEqual({
+      issues: [
+        { path: 'answers.0.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
+        { path: 'answers.1.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
+        { path: 'answers.2.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
+        { path: 'answers.3.followUp', message: 'follow-up options apply to a Fair or Poor rating only' },
+      ],
+    });
+    // Nothing of the refused batch was kept.
+    const self = await adminA.get(`/api/v1/assessments/self/${split.id}/DOMESTIC`);
+    expect((self.body.data.answers as { questionId: string }[]).map((answer) => answer.questionId)).not.toContain(survey.q['Q.REQ']);
+  });
+
+  it('a SINGLE assessment keeps its comment rules', async () => {
+    const { id } = await getOrCreateForInvitation(invitation(single, acoB, customerB));
+    await expect(patchAnswers(id, [{ questionId: survey.q['Q.REQ']!, rating: 4 }, { questionId: survey.q['Q.LOW']!, rating: 2 }])).rejects.toMatchObject({
+      code: 'VALIDATION',
+      details: {
+        issues: [
+          { path: 'answers.0.comment', message: 'a comment is required for this question' },
+          { path: 'answers.1.comment', message: 'a comment is required for a Fair or Poor rating' },
+        ],
+      },
+    });
+    expect(await patchAnswers(id, [{ questionId: survey.q['Q.REQ']!, rating: 4, comment: 'Fine' }])).toMatchObject({ answered: 1, total: 4 });
   });
 });
