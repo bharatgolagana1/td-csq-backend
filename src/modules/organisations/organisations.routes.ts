@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { route } from '../../core/http.js';
 import { idSchema } from '../../core/ids.js';
 
-import { getMarketShare, putMarketShare } from './market-share.service.js';
+import { currentShareTotals, getMarketShare, putMarketShare } from './market-share.service.js';
 import { createOperator, deactivateOperator, getOperator, listOperators, updateOperator } from './operators.service.js';
 import {
   createOperatorBody,
@@ -13,6 +13,8 @@ import {
   operatorListQuery,
   operatorResponse,
   patchOperatorBody,
+  shareTotalResponse,
+  shareTotalsQuery,
 } from './organisations.schemas.js';
 
 const operatorParams = z.object({ id: idSchema });
@@ -73,6 +75,15 @@ export const organisationsRoutes = [
     query: marketShareQuery,
     response: marketShareResponse,
     handler: ({ ctx, params, query }) => getMarketShare(ctx, params.id, query.cycleId ?? null),
+  }),
+  route({
+    method: 'get',
+    path: '/market-share/totals',
+    policy: { kind: 'task', task: 'marketshare.view' },
+    summary: 'Current share totals for a list of airports (?airportIds=a,b); airports out of scope are left out',
+    query: shareTotalsQuery,
+    response: z.array(shareTotalResponse),
+    handler: ({ ctx, query }) => currentShareTotals(ctx, query.airportIds),
   }),
   route({
     method: 'put',

@@ -4,15 +4,20 @@ import type { RequestContext } from '../../core/auth/session.js';
 import { withTransaction } from '../../core/db.js';
 import { AppError } from '../../core/errors.js';
 import { idString, toId } from '../../core/ids.js';
-import { requireAirport } from '../airports/airports.service.js';
+import { findAirportsByIds, requireAirport } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
 
 import { MarketShareModel, type MarketShareDoc } from './market-shares.model.js';
 import { OrganisationModel, type OrganisationDoc } from './organisations.model.js';
-import type { MarketShareDto, MarketShareInput } from './organisations.schemas.js';
+import type { MarketShareDto, MarketShareInput, ShareTotalDto } from './organisations.schemas.js';
 
 /** Shares must total 100 within this tolerance (ARCHITECTURE §6). */
 export const SHARE_TOLERANCE = 0.01;
+
+/** Whether a set's total is 100 within the tolerance, compared to two decimals so 99.99 and 100.01 pass despite float sums. */
+export function totalsHundred(total: number): boolean {
+  return Math.abs(roundShare(total - 100)) <= SHARE_TOLERANCE;
+}
 
 /**
  * Whether a cycle's market-share snapshot is frozen. The cycles module
@@ -33,26 +38,52 @@ export async function isMarketShareFrozen(cycleId: string | null): Promise<boole
 
 /** Airport visibility: PLATFORM any; AIRPORT its own; ACO the airport it operates at. Otherwise 404. */
 function assertAirportVisible(ctx: RequestContext, airportId: string): void {
-  const visible =
+  if (!airportVisible(ctx, airportId)) throw new AppError('NOT_FOUND', 'Airport not found');
+}
+
+/** Whether the caller may read an airport's shares (see assertAirportVisible). */
+function airportVisible(ctx: RequestContext, airportId: string): boolean {
+  return (
     ctx.scope.kind === 'PLATFORM' ||
     (ctx.scope.kind === 'AIRPORT' && ctx.scope.airportId === airportId) ||
-    (ctx.scope.kind === 'ACO' && ctx.org.airportId === airportId);
-  if (!visible) throw new AppError('NOT_FOUND', 'Airport not found');
+    (ctx.scope.kind === 'ACO' && ctx.org.airportId === airportId)
+  );
 }
 
-async function loadSet(airportId: Types.ObjectId, cycleId: Types.ObjectId | null): Promise<MarketShareDoc[]> {
-  return MarketShareModel.find({ airportId, cycleId }).sort({ sharePct: -1 }).lean<MarketShareDoc[]>();
+export function roundShare(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
-async function toDto(airportId: string, cycleId: string | null, docs: MarketShareDoc[]): Promise<MarketShareDto> {
-  const orgs = await OrganisationModel.find({ _id: { $in: docs.map((doc) => doc.acoId) } }).lean<OrganisationDoc[]>();
+async function loadSet(airportId: Types.ObjectId, cycleId: Types.ObjectId | null, session?: ClientSession): Promise<MarketShareDoc[]> {
+  return MarketShareModel.find({ airportId, cycleId }, null, session ? { session } : {})
+    .sort({ sharePct: -1 })
+    .lean<MarketShareDoc[]>();
+}
+
+/** The entries of a set with operator codes and names, and their total. */
+export interface ShareSetView {
+  entries: MarketShareDto['entries'];
+  total: number;
+}
+
+async function viewOf(docs: MarketShareDoc[], session?: ClientSession): Promise<ShareSetView> {
+  const orgs = await OrganisationModel.find({ _id: { $in: docs.map((doc) => doc.acoId) } }, null, session ? { session } : {}).lean<OrganisationDoc[]>();
   const orgById = new Map(orgs.map((org) => [idString(org._id), org]));
   const entries = docs.map((doc) => {
     const org = orgById.get(idString(doc.acoId));
     return { acoId: idString(doc.acoId), code: org?.code ?? '?', name: org?.name ?? 'Unknown operator', sharePct: doc.sharePct };
   });
-  const total = Math.round(entries.reduce((sum, entry) => sum + entry.sharePct, 0) * 100) / 100;
-  return { airportId, cycleId, entries, total, frozen: await isMarketShareFrozen(cycleId) };
+  return { entries, total: roundShare(entries.reduce((sum, entry) => sum + entry.sharePct, 0)) };
+}
+
+/** The airport's current (cycle-less) set as it stands, read inside `session` when given. */
+export async function currentShareView(airportId: Types.ObjectId, session?: ClientSession): Promise<ShareSetView> {
+  return viewOf(await loadSet(airportId, null, session), session);
+}
+
+async function toDto(airportId: string, cycleId: string | null, docs: MarketShareDoc[]): Promise<MarketShareDto> {
+  const view = await viewOf(docs);
+  return { airportId, cycleId, entries: view.entries, total: view.total, frozen: await isMarketShareFrozen(cycleId) };
 }
 
 export async function getMarketShare(ctx: RequestContext, airportId: string, cycleId: string | null): Promise<MarketShareDto> {
@@ -94,41 +125,90 @@ export async function putMarketShare(ctx: RequestContext, airportId: string, inp
     seen.add(entry.acoId);
   });
   const total = input.entries.reduce((sum, entry) => sum + entry.sharePct, 0);
-  if (Math.abs(total - 100) > SHARE_TOLERANCE) {
-    issues.push({ path: 'entries', message: `Market shares must total 100 (got ${Math.round(total * 100) / 100})` });
+  if (!totalsHundred(total)) {
+    issues.push({ path: 'entries', message: `Market shares must total 100 (got ${roundShare(total)})` });
   }
   if (issues.length > 0) throw new AppError('VALIDATION', 'Invalid market-share set', { issues });
 
   const cycleOid = cycleId ? toId(cycleId) : null;
   const before = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid));
-  await withTransaction(async (session) => {
-    await MarketShareModel.deleteMany(
-      { airportId: airport._id, cycleId: cycleOid, acoId: { $nin: input.entries.map((entry) => toId(entry.acoId)) } },
-      { session },
-    );
-    await MarketShareModel.bulkWrite(
-      input.entries.map((entry) => ({
-        updateOne: {
-          filter: { airportId: airport._id, cycleId: cycleOid, acoId: toId(entry.acoId) },
-          update: {
-            $set: { sharePct: entry.sharePct, setBy: toId(ctx.user.id), note: input.note ?? null },
-            $setOnInsert: { airportId: airport._id, cycleId: cycleOid, acoId: toId(entry.acoId) },
-          },
-          upsert: true,
-        },
-      })),
-      { session },
-    );
-  });
+  await withTransaction((session) =>
+    writeShareSet({ airportId: airport._id, cycleId: cycleOid, entries: input.entries, setBy: toId(ctx.user.id), note: input.note ?? null }, session),
+  );
   const after = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid));
+  await auditShareChange(ctx, { airportId, cycleId, before, after });
+  return after;
+}
+
+/** Replaces the set for (airport, cycle) with exactly `entries`, inside the caller's transaction; no validation. */
+export async function writeShareSet(
+  input: {
+    airportId: Types.ObjectId;
+    cycleId: Types.ObjectId | null;
+    entries: { acoId: string; sharePct: number }[];
+    setBy: Types.ObjectId | null;
+    note: string | null;
+  },
+  session: ClientSession,
+): Promise<void> {
+  const { airportId, cycleId } = input;
+  await MarketShareModel.deleteMany({ airportId, cycleId, acoId: { $nin: input.entries.map((entry) => toId(entry.acoId)) } }, { session });
+  if (input.entries.length === 0) return;
+  await MarketShareModel.bulkWrite(
+    input.entries.map((entry) => ({
+      updateOne: {
+        filter: { airportId, cycleId, acoId: toId(entry.acoId) },
+        update: {
+          $set: { sharePct: entry.sharePct, setBy: input.setBy, note: input.note },
+          $setOnInsert: { airportId, cycleId, acoId: toId(entry.acoId) },
+        },
+        upsert: true,
+      },
+    })),
+    { session },
+  );
+}
+
+/** A set before and after a change, for the `marketshare.updated` audit row. */
+export interface ShareChange {
+  airportId: string;
+  cycleId: string | null;
+  before: ShareSetView;
+  after: ShareSetView;
+}
+
+/** Audits a written set as `marketshare.updated` (after the transaction commits). */
+export async function auditShareChange(ctx: RequestContext, change: ShareChange): Promise<void> {
   await audit(ctx, {
     action: 'marketshare.updated',
     entity: 'airport.marketshare',
-    entityId: cycleId ? `${airportId}:${cycleId}` : airportId,
-    before: { entries: before.entries, total: before.total },
-    after: { entries: after.entries, total: after.total },
+    entityId: change.cycleId ? `${change.airportId}:${change.cycleId}` : change.airportId,
+    before: { entries: change.before.entries, total: change.before.total },
+    after: { entries: change.after.entries, total: change.after.total },
   });
-  return after;
+}
+
+/**
+ * `GET /market-share/totals`: each listed airport's current (cycle-less)
+ * total and number of entries, in one aggregation, so a picker can flag every
+ * airport whose shares do not total 100 (what publishing a cycle checks).
+ * Airports outside the caller's scope and unknown ids are left out; an airport
+ * without shares reads total 0.
+ */
+export async function currentShareTotals(ctx: RequestContext, airportIds: string[]): Promise<ShareTotalDto[]> {
+  const visible = [...new Set(airportIds)].filter((id) => airportVisible(ctx, id));
+  const airports = await findAirportsByIds(visible);
+  const known = visible.filter((id) => airports.has(id));
+  if (known.length === 0) return [];
+  const rows = await MarketShareModel.aggregate<{ _id: Types.ObjectId; total: number; entries: number }>([
+    { $match: { cycleId: null, airportId: { $in: known.map((id) => toId(id, 'airportId')) } } },
+    { $group: { _id: '$airportId', total: { $sum: '$sharePct' }, entries: { $sum: 1 } } },
+  ]);
+  const byAirport = new Map(rows.map((row) => [idString(row._id), row]));
+  return known.map((airportId) => {
+    const row = byAirport.get(airportId);
+    return { airportId, total: roundShare(row?.total ?? 0), entries: row?.entries ?? 0 };
+  });
 }
 
 /** acoId → current (cycle-less) share, for operator summaries. */

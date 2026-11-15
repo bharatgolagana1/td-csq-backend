@@ -252,7 +252,8 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `POST /operators` `operators.manage` `{ code, name, airportId, operations, address, contact, admin { name, email, phone }, marketSharePct? }` → creates ACTIVE org + INVITED admin user.
 - `GET /operators/:id` (PLATFORM any; ACO own) · `PATCH /operators/:id` `operators.manage` · `POST /operators/:id/deactivate`
 - `GET /airports/:id/market-share?cycleId=` `marketshare.view` → `{ airportId, cycleId?, entries: [{ acoId, name, sharePct }], total, frozen }`
-- `PUT /airports/:id/market-share` `marketshare.manage` `{ cycleId?: string|null, entries: [{ acoId, sharePct }] }` → validates total = 100 (±0.01), refuses when the cycle is frozen.
+- `PUT /airports/:id/market-share` `marketshare.manage` `{ cycleId?: string|null, entries: [{ acoId, sharePct }] }` → validates total = 100 (±0.01, compared to two decimals so 99.99 passes), refuses when the cycle is frozen.
+- `GET /market-share/totals?airportIds=a,b,…` `marketshare.view` → `[{ airportId, total, entries }]`: each listed airport's current (cycle-less) share total (two decimals; 0 when none is set) and how many entries it has, in the order asked, from one aggregation — what the cycle builder needs to flag every airport that would refuse a publish. 1–300 ids, de-duplicated; unknown airports and airports outside the caller's scope (ACO: its airport; AIRPORT: its own) are left out.
 
 ### onboarding
 - `POST /onboarding/links` `onboarding.links` `{ orgType, airportId?, expiresInDays = 14, note? }` → `{ id, url, expiresAt }` (the raw token only in this response) · `GET /onboarding/links` [list] · `DELETE /onboarding/links/:id`

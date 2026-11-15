@@ -116,3 +116,22 @@ export const marketShareBody = z
   })
   .strict();
 export type MarketShareInput = z.infer<typeof marketShareBody>;
+
+/** `GET /market-share/totals?airportIds=a,b`: comma-separated, de-duplicated, at most 300. */
+export const MAX_TOTALS_AIRPORTS = 300;
+
+export const shareTotalsQuery = z.object({
+  airportIds: z
+    .string()
+    .transform((value) => [...new Set(value.split(',').map((part) => part.trim()).filter((part) => part !== ''))])
+    .pipe(z.array(idSchema).min(1).max(MAX_TOTALS_AIRPORTS)),
+});
+
+export const shareTotalResponse = z.object({
+  airportId: z.string(),
+  /** Sum of the current (cycle-less) shares, two decimals; 0 when none are set. */
+  total: z.number(),
+  /** How many operators hold a current share entry. */
+  entries: z.number(),
+});
+export type ShareTotalDto = z.infer<typeof shareTotalResponse>;

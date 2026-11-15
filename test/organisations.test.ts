@@ -196,3 +196,35 @@ describe('market share', () => {
     expect(detail.body.data.marketShare.total).toBe(100);
   });
 });
+
+describe('GET /market-share/totals', () => {
+  it('totals each listed airport in one call, in the order asked; unknown airports are left out', async () => {
+    const [blr, hyd, goi] = await Promise.all([airportIdByIata('BLR'), airportIdByIata('HYD'), airportIdByIata('GOI')]);
+    // BLR: MS-A holds 100 (the set above); HYD: MS-C without a share; GOI: nobody.
+    const res = await superAdmin.get(`/api/v1/market-share/totals?airportIds=${blr},${goi},${hyd},${blr},0123456789abcdef01234567`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual([
+      { airportId: blr, total: 100, entries: 1 },
+      { airportId: goi, total: 0, entries: 0 },
+      { airportId: hyd, total: 0, entries: 0 },
+    ]);
+  });
+
+  it('validates the list', async () => {
+    expectError(await superAdmin.get('/api/v1/market-share/totals'), 400, 'VALIDATION');
+    expectError(await superAdmin.get('/api/v1/market-share/totals?airportIds='), 400, 'VALIDATION');
+    expectError(await superAdmin.get('/api/v1/market-share/totals?airportIds=nope'), 400, 'VALIDATION');
+    const many = Array.from({ length: 301 }, (_, i) => i.toString(16).padStart(24, '0')).join(',');
+    expectError(await superAdmin.get(`/api/v1/market-share/totals?airportIds=${many}`), 400, 'VALIDATION');
+  });
+
+  it('needs marketshare.view, and an operator only gets its own airport', async () => {
+    const [blr, hyd] = await Promise.all([airportIdByIata('BLR'), airportIdByIata('HYD')]);
+    const user = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_USER', orgCode: 'TOTALS-ACO', airportIata: 'BLR' });
+    expectError(await user.get(`/api/v1/market-share/totals?airportIds=${blr}`), 403, 'FORBIDDEN');
+    await grantTasks('ACO_USER', ['marketshare.view']);
+    const own = await user.get(`/api/v1/market-share/totals?airportIds=${hyd},${blr}`);
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data).toEqual([{ airportId: blr, total: 100, entries: 1 }]);
+  });
+});
