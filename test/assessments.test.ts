@@ -211,28 +211,20 @@ describe('patchAnswers', () => {
     expect(await issuesOf([{ questionId: domestic.q['Q.OPT']!, na: true }])).toEqual([]);
   });
 
-  it('requires a comment when the comment mode is REQUIRED (also on NA)', async () => {
-    expect(await issuesOf([{ questionId: domestic.q['Q.REQ']!, rating: 5 }])).toEqual(['answers.0.comment: a comment is required for this question']);
-    expect(await issuesOf([{ questionId: domestic.q['Q.REQ']!, rating: 5, comment: '   ' }])).toHaveLength(1);
-    expect(await issuesOf([{ questionId: domestic.q['Q.REQ']!, na: true }])).toHaveLength(1);
-    expect(await issuesOf([{ questionId: domestic.q['Q.REQ']!, rating: 5, comment: 'Spotless' }])).toEqual([]);
-  });
-
-  it('requires a comment on a Fair or Poor rating when the mode is REQUIRED_ON_LOW, and not otherwise', async () => {
-    expect(await issuesOf([{ questionId: domestic.q['Q.LOW']!, rating: 2 }])).toEqual(['answers.0.comment: a comment is required for a Fair or Poor rating']);
-    expect(await issuesOf([{ questionId: domestic.q['Q.LOW']!, rating: 1 }])).toHaveLength(1);
-    expect(await issuesOf([{ questionId: domestic.q['Q.LOW']!, rating: 3 }])).toEqual([]);
-    expect(await issuesOf([{ questionId: domestic.q['Q.LOW']!, na: true }])).toEqual([]);
-    expect(await issuesOf([{ questionId: domestic.q['Q.LOW']!, rating: 2, comment: 'Slow' }])).toEqual([]);
-  });
-
-  it('refuses a comment where the mode is NONE', async () => {
+  it('allows missing, blank and non-empty comments regardless of legacy commentMode', async () => {
+    for (const code of ['Q.REQ', 'Q.LOW']) {
+      expect(await issuesOf([{ questionId: domestic.q[code]!, rating: 1 }])).toEqual([]);
+      expect(await issuesOf([{ questionId: domestic.q[code]!, na: true, comment: '   ' }])).toEqual([]);
+      expect(await issuesOf([{ questionId: domestic.q[code]!, rating: 5, comment: 'Spotless' }])).toEqual([]);
+    }
     const cb = await getOrCreateForInvitation(invitation(cbCustomerA, idString(adminA.org._id)));
-    await expect(patchAnswers(cb.id, [{ questionId: domestic.q['Q.NONE']!, rating: 4, comment: 'Nice' }])).rejects.toMatchObject({
-      code: 'VALIDATION',
-      details: { issues: [{ path: 'answers.0.comment', message: 'this question takes no comment' }] },
-    });
-    expect((await patchAnswers(cb.id, [{ questionId: domestic.q['Q.NONE']!, rating: 4, comment: '' }])).answered).toBe(1);
+    expect((await patchAnswers(cb.id, [{ questionId: domestic.q['Q.NONE']!, rating: 4, comment: ' Nice ' }])).answered).toBe(1);
+    expect((await getDraft(cb.id)).answers[0]?.comment).toBe('Nice');
+    for (const comment of ['', '   ', null]) {
+      await patchAnswers(cb.id, [{ questionId: domestic.q['Q.NONE']!, rating: 4, comment: 'Saved' }]);
+      await patchAnswers(cb.id, [{ questionId: domestic.q['Q.NONE']!, rating: 4, comment }]);
+      expect((await getDraft(cb.id)).answers[0]?.comment).toBeNull();
+    }
   });
 
   it('allows follow-up options only on a Fair or Poor rating, only from the list, and only where the question offers them', async () => {
@@ -258,7 +250,7 @@ describe('patchAnswers', () => {
     expect(replaced).toMatchObject({ answered: 2, total: 4, pct: 50 });
     const draft = await getDraft(fresh);
     expect(draft.answers).toEqual([
-      { questionId: domestic.q['Q.OPT'], rating: 5, na: false, comment: null, followUp: [] },
+      { questionId: domestic.q['Q.OPT'], rating: 5, na: false, comment: 'ok', followUp: [] },
       { questionId: domestic.q['Q.PLAIN'], rating: null, na: true, comment: null, followUp: [] },
     ]);
     expect(draft.progress).toEqual({ answered: 2, total: 4, pct: 50 });
@@ -266,7 +258,7 @@ describe('patchAnswers', () => {
     // A batch may be empty; nothing changes.
     expect((await patchAnswers(fresh, [])).answered).toBe(2);
     // A whole batch is refused when one entry is invalid.
-    await expect(patchAnswers(fresh, [{ questionId: domestic.q['Q.REQ']!, rating: 4, comment: 'fine' }, { questionId: domestic.q['Q.LOW']!, rating: 2 }])).rejects.toMatchObject({ code: 'VALIDATION' });
+    await expect(patchAnswers(fresh, [{ questionId: domestic.q['Q.REQ']!, rating: 4, comment: 'fine' }, { questionId: domestic.q['Q.LOW']!, rating: 6 }])).rejects.toMatchObject({ code: 'VALIDATION' });
     expect((await getDraft(fresh)).answers).toHaveLength(2);
   });
 });
@@ -482,8 +474,9 @@ describe('self assessment', () => {
   it('saves answers and section remarks through PATCH (validated at the edge and against the form) and submits only when both are complete', async () => {
     expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.OPT'], rating: 7 }] }), 400, 'VALIDATION');
     expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.OPT'], rating: 4, extra: 1 }] }), 400, 'VALIDATION');
-    const bad = await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.REQ'], rating: 4 }] });
-    expect(expectError(bad, 400, 'VALIDATION').details).toMatchObject({ issues: [{ path: 'answers.0.comment' }] });
+    const optional = await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.REQ'], rating: 4 }] });
+    expect(optional.status).toBe(200);
+    expectError(await userA.patch(`${path()}/answers`).send({ answers: [{ questionId: domestic.q['Q.REQ'], rating: 4, comment: 'x'.repeat(2001) }] }), 400, 'VALIDATION');
 
     const saved = await userA.patch(`${path()}/answers`).send({
       answers: [
@@ -496,15 +489,19 @@ describe('self assessment', () => {
     expect(saved.body.data).toMatchObject({ answered: 3, total: 5, pct: 60 });
     // Reopened, the self-assessment says when it was last saved.
     expect(typeof saved.body.data.lastSavedAt).toBe('string');
-    expect((await userA.get(path())).body.data.assessment.lastSavedAt).toBe(saved.body.data.lastSavedAt);
+    const reopened = (await userA.get(path())).body.data;
+    expect(reopened.assessment.lastSavedAt).toBe(saved.body.data.lastSavedAt);
+    expect(reopened.answers).toContainEqual(expect.objectContaining({ questionId: domestic.q['Q.REQ'], comment: 'Needs work' }));
 
     expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED');
     await userA.patch(`${path()}/answers`).send({
       answers: [
         { questionId: domestic.q['Q.LOW'], rating: 5 },
         { questionId: domestic.q['Q.PLAIN'], rating: 2 },
+        { questionId: domestic.q['Q.REQ'], rating: 3, comment: '   ' },
       ],
     });
+    expect((await userA.get(path())).body.data.answers).toContainEqual(expect.objectContaining({ questionId: domestic.q['Q.REQ'], comment: null }));
     const infra = domestic.section['INFRA'];
     const proc = domestic.section['PROC'];
     const noRemarks = expectError(await userA.post(`${path()}/submit`), 412, 'PRECONDITION_FAILED');

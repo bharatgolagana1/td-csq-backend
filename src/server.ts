@@ -1,4 +1,4 @@
-// Boot: env → logger → db (+ score-direction migration) → modules (tasks, settings) → app → scheduler → listen.
+// Boot: env → logger → db (+ score-direction and shared-comment migrations) → modules (tasks, settings) → app → scheduler → listen.
 import { createApp } from './app.js';
 import { loadEnv } from './config/env.js';
 import { createTokenVerifier } from './core/auth/keycloak.js';
@@ -7,6 +7,7 @@ import { initLogger, logger } from './core/logger.js';
 import { scheduler } from './core/scheduler.js';
 import { APP_NAME, APP_VERSION } from './core/version.js';
 import { registerJobs } from './jobs/index.js';
+import { migrateSharedComments } from './modules/assessments/assessments.migration.js';
 import { syncModuleTasks, validateModules } from './modules/index.js';
 import { migrateScoreDirections } from './modules/scoring/scores.migration.js';
 import { ensureSettings } from './modules/settings/settings.service.js';
@@ -17,6 +18,7 @@ initLogger({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' });
 validateModules();
 await connectDb(env.MONGO_URI);
 await migrateScoreDirections();
+await migrateSharedComments();
 await syncModuleTasks();
 await ensureSettings();
 

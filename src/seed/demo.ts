@@ -6,6 +6,7 @@
 import { loadEnv } from '../config/env.js';
 import { connectDb, disconnectDb } from '../core/db.js';
 import { initLogger } from '../core/logger.js';
+import { migrateSharedComments } from '../modules/assessments/assessments.migration.js';
 import { migrateScoreDirections } from '../modules/scoring/scores.migration.js';
 
 import { runDemoSeed, type DemoSeedOptions } from './demo/run.js';
@@ -38,6 +39,7 @@ await connectDb(env.MONGO_URI);
 try {
   // The seed scores cycles; the database may still predate per-direction score rows.
   await migrateScoreDirections();
+  await migrateSharedComments();
   const result = await runDemoSeed({ ...options, log: (line) => console.log(line) });
   const seconds = (result.durationMs / 1000).toFixed(1);
   console.log('');

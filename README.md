@@ -150,10 +150,17 @@ questions, subcategories: [{ …, questions }] }] }`), wrapped with the
 `assessment` and its `progress { answered, total, pct }`; a self-assessment
 carries every active question (`stakeholderType: null`). Answers are
 validated against that form (`assessments.form.ts`, pure): the question must
-be on the form, exactly one of `rating` 1–5 / `na`, a comment when
-`commentMode` is REQUIRED (or REQUIRED_ON_LOW with a Fair / Poor rating),
-none when NONE, follow-up options only on Fair / Poor and only from the
-question's list. A PATCH is a merge by question (the client may batch); a
+be on the form, exactly one of `rating` 1 to 5 / `na`, follow-up options only
+on Fair / Poor and only from the question's list. Every question accepts an
+optional `comment` in both SINGLE and IMPORT_EXPORT modes, regardless of
+legacy `commentMode` (including REQUIRED, REQUIRED_ON_LOW and NONE).
+Comments are trimmed and limited to 2,000 characters after trimming;
+null, empty or whitespace-only values clear a saved comment. Each answer
+entry replaces its rating/follow-up slot; an omitted comment preserves the saved
+question comment. Import and export share one comment, returned on both entries.
+Conflicting explicit comments for one question in a batch are rejected.
+Draft, self-assessment and assessment detail responses return saved comments.
+A PATCH is a merge by question and direction (the client may batch); a
 batch with one bad entry is refused whole with `details.issues[{ path,
 message }]`. Submit needs every question answered (412 with
 `details.missing`), locks the assessment (every later write is 412), emits
@@ -592,3 +599,13 @@ order. The lower contracts are consumed in `reports.sources.ts` only, which is
 also the seam `test/reports.test.ts` replaces; `test/reports.flow.test.ts`
 drives the real surveys, cycles and assessments modules and replaces scoring
 alone. No audit (reads only), no events, no jobs.
+
+
+Shared question comments: `migrateSharedComments()` runs at server boot before
+requests, and during demo/test setup. It handles CUSTOMER and SELF drafts and
+submitted assessments. Original non-null notes are retained verbatim in internal
+`legacyDirectionalComments`; distinct notes become labeled, combined shared text
+without truncation. Identical notes are deduplicated. Migration is idempotent
+(`sharedCommentsVersion: 1`) and preserves status and historical timestamps.
+Legacy combined text may exceed 2,000 characters; the 2,000-character limit applies
+to new comment input. Reads and CSV repeat the shared value per direction.

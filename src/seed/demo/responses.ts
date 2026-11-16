@@ -85,7 +85,7 @@ function answerFor({ question, category }: FormQuestionPlace, profile: RatingPro
   const rating = ratingFor(quality, rng);
   const answer: AnswerInput = { questionId: question.id, rating };
   const low = rating <= 2;
-  // An IMPORT_EXPORT answer takes no comment; its section remark carries the free text.
+  // Demo IMPORT_EXPORT answers omit optional comments; section remarks carry the free text.
   if (options.answerMode !== 'IMPORT_EXPORT' && question.commentMode !== 'NONE') {
     if (low || question.commentMode === 'REQUIRED') {
       const pool = options.self ? SELF_COMMENTS : (LOW_RATING_COMMENTS[category.code] ?? GENERIC_LOW_COMMENTS);

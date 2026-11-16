@@ -1,7 +1,7 @@
 // Import / export answers end to end over the real modules: a SINGLE cycle
 // and an IMPORT_EXPORT cycle with the same two operators (DEL, BOM). Covers
-// the assessments inheriting the cycle's mode (answers per direction, no
-// comments on IMPORT_EXPORT, one remark per section whatever the mode,
+// the assessments inheriting the cycle's mode (answers per direction,
+// shared comments per question, one remark per section whatever the mode,
 // readiness, submit, history), scoring per direction (rows, ranks, airports,
 // a mode switch dropping the other direction's rows, assessments of the other
 // mode ignored), the reports' direction resolution and the boot migration of
@@ -11,8 +11,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { clearEventHandlers } from '../src/core/events.js';
 import { idString, newId, toId } from '../src/core/ids.js';
 import type { AnswerInput } from '../src/modules/assessments/assessments.form.js';
+import { migrateSharedComments } from '../src/modules/assessments/assessments.migration.js';
 import { AssessmentModel } from '../src/modules/assessments/assessments.model.js';
-import { getOrCreateForInvitation, getOrCreateSelf, patchAnswers, patchSectionRemarks, readiness, submit } from '../src/modules/assessments/assessments.service.js';
+import { getAssessment, getDraft, getOrCreateForInvitation, getOrCreateSelf, patchAnswers, patchSectionRemarks, readiness, submit } from '../src/modules/assessments/assessments.service.js';
 import { CycleModel } from '../src/modules/cycles/cycles.model.js';
 import type { OrganisationDoc } from '../src/modules/organisations/organisations.model.js';
 import { AirportScoreModel } from '../src/modules/scoring/airport-scores.model.js';
@@ -47,8 +48,7 @@ let splitA: string;
 
 /**
  * Every FF question rated `rating`, in one direction or none. Undirected
- * (SINGLE) answers carry the comment Q.REQ and a low Q.LOW need; directed
- * (IMPORT_EXPORT) ones none, as that form takes no comment.
+ * answers carry an optional comment in SINGLE mode; directed ones omit it.
  */
 function answers(rating: number, direction?: 'IMPORT' | 'EXPORT'): AnswerInput[] {
   return FF_QUESTIONS.map((code) => ({ questionId: survey.q[code] ?? code, ...(direction ? { direction } : { comment: 'Noted' }), rating }));
@@ -307,7 +307,7 @@ describe('report direction', () => {
     expect(questions.body.data).toMatchObject({ direction: 'EXPORT', cycle: { answerMode: 'IMPORT_EXPORT' } });
     // Every active question of the tree in survey order; Q.NONE is on the CB form only, so nobody answered it.
     const rows = questions.body.data.questions as { code: string; customer: { mean: number | null }; comments: number }[];
-    // An IMPORT_EXPORT answer takes no comment, so none are counted.
+    // These answers omitted optional comments, so none are counted.
     expect(rows.map((row) => [row.code, row.customer.mean, row.comments])).toEqual([
       ['Q.OPT', 2, 0],
       ['Q.REQ', 2, 0],
@@ -408,7 +408,7 @@ describe('migrateScoreDirections (boot)', () => {
 });
 
 describe('comments on an IMPORT_EXPORT assessment', () => {
-  it('are not collected: REQUIRED and REQUIRED_ON_LOW questions are saved, ready and submitted without one in either direction', async () => {
+  it('allows REQUIRED and REQUIRED_ON_LOW questions to save and submit without comments in either direction', async () => {
     const { id } = await getOrCreateForInvitation(invitation(split, acoB, customerB));
     const bare = (direction: 'IMPORT' | 'EXPORT'): AnswerInput[] => [
       // Poor on the REQUIRED_ON_LOW question, with one of its follow-up options.
@@ -428,40 +428,93 @@ describe('comments on an IMPORT_EXPORT assessment', () => {
     expect(stored!.answers.filter((answer) => answer.followUp.length > 0).map((answer) => answer.direction)).toEqual(['IMPORT', 'EXPORT']);
   });
 
-  it('refuses a comment with a VALIDATION issue instead of dropping it, whatever the comment mode; the follow-up rule still holds per direction', async () => {
-    const path = `/api/v1/assessments/self/${split.id}/DOMESTIC/answers`;
-    const refused = await adminA.patch(path).send({
-      answers: [
-        { questionId: survey.q['Q.REQ'], direction: 'IMPORT', rating: 2, comment: 'Slow at the export dock' },
-        { questionId: survey.q['Q.OPT'], direction: 'EXPORT', rating: 5, comment: 'Quick' },
-        { questionId: survey.q['Q.NONE'], direction: 'EXPORT', rating: 3, comment: 'Fine' },
-        { questionId: survey.q['Q.LOW'], direction: 'EXPORT', rating: 4, followUp: [FOLLOW_UP_OPTIONS[0]] },
-      ],
-    });
-    expect(expectError(refused, 400, 'VALIDATION').details).toEqual({
-      issues: [
-        { path: 'answers.0.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
-        { path: 'answers.1.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
-        { path: 'answers.2.comment', message: 'an import / export answer takes no comment; write it in the section remark' },
-        { path: 'answers.3.followUp', message: 'follow-up options apply to a Fair or Poor rating only' },
-      ],
-    });
-    // Nothing of the refused batch was kept.
-    const self = await adminA.get(`/api/v1/assessments/self/${split.id}/DOMESTIC`);
-    expect((self.body.data.answers as { questionId: string }[]).map((answer) => answer.questionId)).not.toContain(survey.q['Q.REQ']);
+  it('round-trips customer comments through draft and detail and locks them on submission', async () => {
+    const { id } = await getOrCreateForInvitation(invitation(split, acoB, customerB));
+    const inputs = FF_QUESTIONS.flatMap((code) => (['IMPORT', 'EXPORT'] as const).map((direction) => ({
+      questionId: survey.q[code]!, direction, rating: 1, comment: '  Shared note  ',
+    })));
+    await patchAnswers(id, inputs);
+    const expected = inputs.map((answer) => expect.objectContaining({ ...answer, comment: answer.comment.trim() }));
+    expect((await getDraft(id)).answers).toEqual(expect.arrayContaining(expected));
+    expect((await getAssessment(ctxOf(superAdmin, ['assessments.details']), id)).answers).toEqual(expect.arrayContaining(expected));
+    await patchAnswers(id, [{ questionId: inputs[0]!.questionId, direction: 'IMPORT', rating: 4 }]);
+    expect((await getDraft(id)).answers.filter((answer) => answer.questionId === inputs[0]!.questionId).map((answer) => answer.comment)).toEqual(['Shared note', 'Shared note']);
+    await patchAnswers(id, [{ ...inputs[0]!, comment: '' }]);
+    expect((await getDraft(id)).answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionId: inputs[0]!.questionId, direction: 'IMPORT', comment: null }),
+      expect.objectContaining({ questionId: inputs[0]!.questionId, direction: 'EXPORT', comment: null }),
+    ]));
+    await remarkEverySection(id);
+    await submit(ctxOf(superAdmin), id);
+    await expect(patchAnswers(id, [{ ...inputs[0]!, comment: 'Locked' }])).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    const detail = await getAssessment(ctxOf(superAdmin, ['assessments.details']), id);
+    expect(detail.answers.filter((answer) => answer.questionId === inputs[1]!.questionId).every((answer) => answer.comment === null)).toBe(true);
+    const csv = await superAdmin.get(`/api/v1/assessments/export?cycleId=${split.id}&acoId=${acoB}&kind=CUSTOMER&status=SUBMITTED`);
+    expect(csv.status).toBe(200);
+    expect(csv.text).toContain('Shared note');
+
   });
 
-  it('a SINGLE assessment keeps its comment rules', async () => {
+  it('saves shared comments, returns them on self and detail, and preserves follow-up validation', async () => {
+    const base = `/api/v1/assessments/self/${split.id}/DOMESTIC`;
+    const answers = [
+      { questionId: survey.q['Q.REQ'], direction: 'IMPORT', rating: 2, comment: '  Import dock  ' },
+      { questionId: survey.q['Q.REQ'], direction: 'EXPORT', rating: 5, comment: 'Import dock' },
+      { questionId: survey.q['Q.NONE'], direction: 'EXPORT', na: true, comment: 'Fine' },
+    ];
+    expect((await adminA.patch(`${base}/answers`).send({ answers })).status).toBe(200);
+    const self = (await adminA.get(base)).body.data;
+    const expected = [
+      expect.objectContaining({ questionId: survey.q['Q.REQ'], direction: 'IMPORT', comment: 'Import dock' }),
+      expect.objectContaining({ questionId: survey.q['Q.REQ'], direction: 'EXPORT', comment: 'Import dock' }),
+      expect.objectContaining({ questionId: survey.q['Q.NONE'], direction: 'EXPORT', comment: 'Fine' }),
+    ];
+    expect(self.answers).toEqual(expect.arrayContaining(expected));
+    const detail = await adminA.get(`/api/v1/assessments/${self.assessment.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.answers).toEqual(expect.arrayContaining(expected));
+    const invalid = await adminA.patch(`${base}/answers`).send({ answers: [
+      { questionId: survey.q['Q.LOW'], direction: 'EXPORT', rating: 4, comment: 'Fine', followUp: [FOLLOW_UP_OPTIONS[0]] },
+    ] });
+    expect(expectError(invalid, 400, 'VALIDATION').details).toEqual({ issues: [
+      { path: 'answers.0.followUp', message: 'follow-up options apply to a Fair or Poor rating only' },
+    ] });
+    for (const comment of ['', '   ', null]) {
+      expect((await adminA.patch(`${base}/answers`).send({ answers: [answers[0]] })).status).toBe(200);
+      expect((await adminA.patch(`${base}/answers`).send({ answers: [{ ...answers[0], comment }] })).status).toBe(200);
+      const reopened = (await adminA.get(base)).body.data;
+      expect(reopened.answers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ questionId: survey.q['Q.REQ'], direction: 'IMPORT', comment: null }),
+        expect.objectContaining({ questionId: survey.q['Q.REQ'], direction: 'EXPORT', comment: null }),
+      ]));
+    }
+    expect((await adminA.patch(`${base}/answers`).send({ answers: [{ ...answers[0], comment: `  ${'x'.repeat(2000)}  ` }] })).status).toBe(200);
+    expectError(await adminA.patch(`${base}/answers`).send({ answers: [{ ...answers[0], comment: 'x'.repeat(2001) }] }), 400, 'VALIDATION');
+  });
+
+  it('allows SINGLE customer assessments to submit with no question comments', async () => {
     const { id } = await getOrCreateForInvitation(invitation(single, acoB, customerB));
-    await expect(patchAnswers(id, [{ questionId: survey.q['Q.REQ']!, rating: 4 }, { questionId: survey.q['Q.LOW']!, rating: 2 }])).rejects.toMatchObject({
-      code: 'VALIDATION',
-      details: {
-        issues: [
-          { path: 'answers.0.comment', message: 'a comment is required for this question' },
-          { path: 'answers.1.comment', message: 'a comment is required for a Fair or Poor rating' },
-        ],
-      },
-    });
-    expect(await patchAnswers(id, [{ questionId: survey.q['Q.REQ']!, rating: 4, comment: 'Fine' }])).toMatchObject({ answered: 1, total: 4 });
+    expect(await patchAnswers(id, FF_QUESTIONS.map((code) => ({ questionId: survey.q[code]!, rating: 1 })))).toMatchObject({ answered: 4, total: 4 });
+    await remarkEverySection(id);
+    expect(await submit(ctxOf(superAdmin), id)).toMatchObject({ status: 'SUBMITTED' });
+  });
+});
+
+
+describe('shared comment migration', () => {
+  it('archives exact original notes, migrates submitted answers and preserves timestamps', async () => {
+    const { id } = await getOrCreateForInvitation(invitation(split, acoB, customerB));
+    await patchAnswers(id, FF_QUESTIONS.flatMap((code) => (['IMPORT', 'EXPORT'] as const).map((direction) => ({ questionId: survey.q[code]!, direction, rating: 4 }))));
+    const before = await AssessmentModel.findById(id).lean();
+    const legacy = before!.answers.map((answer) => ({ ...answer, comment: `  ${answer.direction} legacy  ` }));
+    await AssessmentModel.collection.updateOne({ _id: before!._id }, { $set: { answers: legacy, status: 'SUBMITTED' }, $unset: { sharedCommentsVersion: '' } });
+    await migrateSharedComments();
+    const after = await AssessmentModel.findById(id).lean();
+    expect(after!.legacyDirectionalComments).toEqual(legacy.map(({ questionId, direction, comment }) => ({ questionId, direction, comment })));
+    expect(after!.answers.every((a) => a.comment === 'EXPORT: EXPORT legacy\n\nIMPORT: IMPORT legacy')).toBe(true);
+    expect(after!.updatedAt).toEqual(before!.updatedAt);
+    expect(after!.status).toBe('SUBMITTED');
+    expect(await migrateSharedComments()).toBe(0);
+    expect((await getDraft(id)).answers.every((a) => a.comment === after!.answers[0]!.comment)).toBe(true);
   });
 });

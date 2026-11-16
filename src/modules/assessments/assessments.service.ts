@@ -17,6 +17,8 @@ import { findOrganisationsByIds } from '../organisations/organisations.service.j
 import { getSettingsDoc } from '../settings/settings.service.js';
 
 import {
+  sharedAnswers,
+  sharedComments,
   answerDirections,
   answerKey,
   formQuestionPlaces,
@@ -225,7 +227,7 @@ export async function getDraft(assessmentId: string): Promise<DraftDto> {
   return {
     id: idString(doc._id),
     status: doc.status,
-    answers: doc.answers.map(toAnswerDto),
+    answers: sharedAnswers(doc.answers).map(toAnswerDto),
     sectionRemarks: sectionRemarksOf(doc).map(toSectionRemarkDto),
     progress: progressOf(doc.answeredCount, doc.questionCount),
     lastSavedAt: doc.lastSavedAt?.toISOString() ?? null,
@@ -438,7 +440,7 @@ export async function getOrCreateSelf(ctx: RequestContext, cycleId: string, surv
 export async function getSelfAssessment(ctx: RequestContext, cycleId: string, surveyType: SurveyType): Promise<SelfAssessmentDto> {
   const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
   const form = await selfForm(doc.surveyId);
-  return { ...formView(doc, form), answers: doc.answers.map(toAnswerDto), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
+  return { ...formView(doc, form), answers: sharedAnswers(doc.answers).map(toAnswerDto), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
 }
 
 export async function patchSelfAnswers(
@@ -497,7 +499,7 @@ export async function listSubmitted(cycleId: string, acoId: string, kind?: Asses
     customerId: doc.customerId ? idString(doc.customerId) : null,
     ...(doc.customerType ? { customerType: doc.customerType } : {}),
     submittedAt: doc.submittedAt?.toISOString() ?? doc.updatedAt.toISOString(),
-    answers: doc.answers.map(toAnswerDto),
+    answers: sharedAnswers(doc.answers).map(toAnswerDto),
   }));
 }
 
@@ -639,6 +641,7 @@ async function requireVisibleAssessment(ctx: RequestContext, id: string): Promis
 
 /** Every form question with its answer; on an IMPORT_EXPORT assessment each question twice, IMPORT then EXPORT. */
 function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], answerMode: AnswerMode): AssessmentDetailDto['answers'] {
+  const comments = sharedComments(answers);
   const bySlot = new Map(answers.map((answer) => [answerKey(answer), answer]));
   const directions = answerDirections(answerMode);
   const places = formQuestionPlaces(form).flatMap((place) => directions.map((direction) => ({ ...place, direction })));
@@ -653,7 +656,7 @@ function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], a
       subcategory: subcategory ? { id: subcategory.id, code: subcategory.code, name: subcategory.name } : null,
       rating: answer?.rating ?? null,
       na: answer?.na ?? false,
-      comment: answer?.comment ?? null,
+      comment: comments.get(question.id) ?? null,
       followUp: answer ? [...answer.followUp] : [],
     };
   });

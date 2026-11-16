@@ -69,7 +69,7 @@ export const formQuestionResponse = z.object({
   order: z.number(),
   weightPct: z.number().nullable(),
   mandatory: z.boolean(),
-  commentMode: z.enum(COMMENT_MODES),
+  commentMode: z.enum(COMMENT_MODES).describe('Legacy metadata; comments are optional on every question regardless of this value.'),
   followUp: z.object({ prompt: z.string(), options: z.array(z.string()) }).nullable(),
 });
 
@@ -136,13 +136,13 @@ export const answerInputSchema = z
     direction: z.enum(ANSWER_DIRECTIONS).optional(),
     rating: ratingSchema.nullable().optional(),
     na: z.boolean().optional(),
-    /** Per the question's comment mode on a SINGLE assessment; an IMPORT_EXPORT one takes none (the form refuses text). */
-    comment: z.string().trim().max(2000).nullable().optional(),
+    /** Optional on every question in both answer modes, regardless of legacy commentMode. */
+    comment: z.string().trim().max(2000).nullable().optional().describe('Optional question comment, trimmed, maximum 2000 characters. Null or blank clears a saved comment. Shared per question in IMPORT_EXPORT mode and returned on both answers. Omission preserves the saved comment. Conflicting explicit comments for a question in one batch are rejected.'),
     followUp: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
   })
   .strict();
 
-/** `PATCH …/answers` body: a merge by question (and direction); each entry replaces the stored answer in its slot. */
+/** `PATCH …/answers` body: replaces rating/follow-ups by question and direction; explicit comments update the shared question value. */
 export const patchAnswersBody = z.object({ answers: z.array(answerInputSchema).max(500) }).strict();
 export type PatchAnswersInput = z.infer<typeof patchAnswersBody>;
 

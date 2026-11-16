@@ -1,10 +1,8 @@
-// The comment rules of `validateAnswers` per answer mode: a SINGLE answer
-// follows its question's comment mode; an IMPORT_EXPORT answer takes no
-// comment whatever the mode (empty or null is fine, text is an issue) while
-// its rating and follow-up rules still apply per direction.
 import { describe, expect, it } from 'vitest';
 
-import { readinessOf, validateAnswers, type AnswerInput, type AssessmentForm, type CommentMode, type FormQuestion } from '../../../src/modules/assessments/assessments.form.js';
+import { mergeAnswers, sharedAnswers, readinessOf, validateAnswers, type AnswerInput, type AssessmentForm, type CommentMode, type FormQuestion } from '../../../src/modules/assessments/assessments.form.js';
+import { AssessmentModel } from '../../../src/modules/assessments/assessments.model.js';
+import { answerInputSchema } from '../../../src/modules/assessments/assessments.schemas.js';
 
 const OPTIONS = ['Queues', 'Paperwork'];
 
@@ -43,46 +41,98 @@ const FORM: AssessmentForm = {
 };
 
 const IDS = ['req', 'low', 'opt', 'none'] as const;
-const NO_COMMENT = 'an import / export answer takes no comment; write it in the section remark';
 
 function issuesOf(inputs: AnswerInput[], mode: 'SINGLE' | 'IMPORT_EXPORT'): string[] {
   const result = validateAnswers(FORM, inputs, mode);
   return result.ok ? [] : result.issues.map((issue) => `${issue.path}: ${issue.message}`);
 }
 
-describe('validateAnswers — IMPORT_EXPORT comments', () => {
-  it('accepts every question without a comment, Poor on REQUIRED and REQUIRED_ON_LOW included, and the form is then complete', () => {
-    const inputs = IDS.flatMap((questionId) => (['IMPORT', 'EXPORT'] as const).map((direction) => ({ questionId, direction, rating: 1 })));
-    const result = validateAnswers(FORM, inputs, 'IMPORT_EXPORT');
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.answers.every((answer) => answer.comment === null)).toBe(true);
-    expect(readinessOf(FORM, result.answers, 'IMPORT_EXPORT')).toEqual({ answered: 8, total: 8, missing: [], complete: true });
+describe.each(['SINGLE', 'IMPORT_EXPORT'] as const)('%s optional question comments', (mode) => {
+  const direction = mode === 'IMPORT_EXPORT' ? { direction: 'IMPORT' as const } : {};
+
+  it.each([undefined, null, '', '   ', '  Helpful  '])('accepts comment %j for every legacy comment mode on ratings and NA', (comment) => {
+    for (const rating of [1, 2, 5, null]) {
+      const inputs = IDS.flatMap((questionId) => (mode === 'IMPORT_EXPORT' ? ['IMPORT', 'EXPORT'] as const : [undefined]).map((direction) => ({ questionId, direction, rating, na: rating === null, comment })));
+      const result = validateAnswers(FORM, inputs, mode);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.answers.every((answer) => answer.comment === (comment === undefined ? undefined : comment?.trim() ? comment.trim() : null))).toBe(true);
+      expect(readinessOf(FORM, result.answers, mode).complete).toBe(true);
+    }
   });
 
-  it('treats a null or blank comment as none', () => {
-    expect(issuesOf([{ questionId: 'req', direction: 'IMPORT', rating: 3, comment: null }, { questionId: 'none', direction: 'EXPORT', na: true, comment: '  ' }], 'IMPORT_EXPORT')).toEqual([]);
+  it('allows 2000 characters after trimming and rejects 2001', () => {
+    expect(issuesOf([{ questionId: 'req', ...direction, rating: 4, comment: `  ${'x'.repeat(2000)}  ` }], mode)).toEqual([]);
+    expect(issuesOf([{ questionId: 'req', ...direction, rating: 4, comment: 'x'.repeat(2001) }], mode)).toEqual(['answers.0.comment: must be at most 2000 characters']);
   });
 
-  it('refuses a comment on any question, whatever its comment mode', () => {
-    const inputs = IDS.map((questionId) => ({ questionId, direction: 'EXPORT' as const, rating: 2, comment: 'Slow' }));
-    expect(issuesOf(inputs, 'IMPORT_EXPORT')).toEqual(IDS.map((_, index) => `answers.${index}.comment: ${NO_COMMENT}`));
-  });
-
-  it('keeps the follow-up rule per direction: only on Fair or Poor, only listed options', () => {
-    expect(issuesOf([{ questionId: 'low', direction: 'IMPORT', rating: 2, followUp: ['Queues'] }, { questionId: 'low', direction: 'EXPORT', rating: 5 }], 'IMPORT_EXPORT')).toEqual([]);
-    expect(issuesOf([{ questionId: 'low', direction: 'EXPORT', rating: 4, followUp: ['Queues'] }], 'IMPORT_EXPORT')).toEqual(['answers.0.followUp: follow-up options apply to a Fair or Poor rating only']);
-    expect(issuesOf([{ questionId: 'low', direction: 'IMPORT', rating: 1, followUp: ['Rude'] }], 'IMPORT_EXPORT')).toEqual(['answers.0.followUp.0: "Rude" is not one of the listed options']);
+  it('keeps rating and follow-up validation', () => {
+    expect(issuesOf([{ questionId: 'low', ...direction, rating: 2, followUp: ['Queues'] }], mode)).toEqual([]);
+    expect(issuesOf([{ questionId: 'low', ...direction, rating: 4, comment: 'Fine', followUp: ['Queues'] }], mode)).toEqual(['answers.0.followUp: follow-up options apply to a Fair or Poor rating only']);
+    expect(issuesOf([{ questionId: 'low', ...direction, rating: 1, followUp: ['Rude'] }], mode)).toEqual(['answers.0.followUp.0: "Rude" is not one of the listed options']);
+    expect(issuesOf([{ questionId: 'req', ...direction, comment: 'Comment alone' }], mode)).toEqual(['answers.0.rating: needs a rating from 1 to 5 or NA']);
   });
 });
 
-describe('validateAnswers — SINGLE comments (unchanged)', () => {
-  it('requires the comment REQUIRED and a low REQUIRED_ON_LOW ask for, and refuses one on NONE', () => {
-    expect(issuesOf([{ questionId: 'req', rating: 4 }, { questionId: 'low', rating: 2 }, { questionId: 'opt', rating: 2 }, { questionId: 'none', rating: 3, comment: 'Fine' }], 'SINGLE')).toEqual([
-      'answers.0.comment: a comment is required for this question',
-      'answers.1.comment: a comment is required for a Fair or Poor rating',
-      'answers.3.comment: this question takes no comment',
-    ]);
-    expect(issuesOf([{ questionId: 'req', rating: 4, comment: 'Fine' }, { questionId: 'low', rating: 2, comment: 'Slow' }, { questionId: 'opt', rating: 2 }], 'SINGLE')).toEqual([]);
+describe('comment boundary and persistence validation', () => {
+  it('trims before checking the limit and accepts optional, blank and null input', () => {
+    for (const comment of [undefined, null, '', '   ', `  ${'x'.repeat(2000)}  `]) {
+      expect(answerInputSchema.safeParse({ questionId: 'req', rating: 4, comment }).success).toBe(true);
+    }
+    expect(answerInputSchema.parse({ questionId: 'req', rating: 4, comment: '  Note  ' }).comment).toBe('Note');
+    for (const comment of [123, {}, 'x'.repeat(2001)]) {
+      expect(answerInputSchema.safeParse({ questionId: 'req', rating: 4, comment }).success).toBe(false);
+    }
+  });
+
+  it('persists trimmed comments with a length limit on each answer', () => {
+    const doc = new AssessmentModel({ answers: [
+      { questionId: 'req', direction: 'IMPORT', rating: 4, comment: '  Import  ' },
+      { questionId: 'req', direction: 'EXPORT', rating: 5, comment: '  Export  ' },
+    ] });
+    expect(doc.answers.map((answer) => answer.comment)).toEqual(['Import', 'Export']);
+    expect(doc.validateSync(['answers'])).toBeUndefined();
+    doc.answers[0]!.comment = 'x'.repeat(2001);
+    expect(doc.validateSync(['answers'])?.errors['answers.0.comment']).toBeDefined();
+  });
+});
+
+it.each(['', '   ', null])('clears the shared comment with %j', (comment) => {
+  const saved = validateAnswers(FORM, [
+    { questionId: 'req', direction: 'IMPORT', rating: 2, comment: 'Shared note' },
+    { questionId: 'req', direction: 'EXPORT', rating: 5, comment: 'Shared note' },
+  ], 'IMPORT_EXPORT');
+  const cleared = validateAnswers(FORM, [{ questionId: 'req', direction: 'IMPORT', rating: 2, comment }], 'IMPORT_EXPORT');
+  expect(saved.ok && cleared.ok).toBe(true);
+  if (!saved.ok || !cleared.ok) return;
+  expect(mergeAnswers(mergeAnswers([], saved.answers), cleared.answers).map((answer) => [answer.direction, answer.comment])).toEqual([['IMPORT', null], ['EXPORT', null]]);
+});
+
+
+describe('shared comment merge semantics', () => {
+  const saved = [
+    { questionId: 'req', direction: 'IMPORT' as const, rating: 2 as const, na: false, comment: 'Saved', followUp: ['Queues'] },
+    { questionId: 'req', direction: 'EXPORT' as const, rating: 5 as const, na: false, comment: 'Saved', followUp: [] },
+  ];
+  it('preserves omitted comments and independent ratings/follow-ups', () => {
+    const validated = validateAnswers(FORM, [{ questionId: 'req', direction: 'EXPORT', rating: 3 }], 'IMPORT_EXPORT');
+    if (!validated.ok) throw new Error('invalid fixture');
+    expect(mergeAnswers(saved, validated.answers)).toEqual([saved[0], { ...saved[1]!, rating: 3 }]);
+    expect(mergeAnswers(saved, [{ ...saved[1]!, comment: 'Changed' }]).map((a) => a.comment)).toEqual(['Changed', 'Changed']);
+    expect(mergeAnswers([{ ...saved[0]!, direction: null }], [{ questionId: 'req', rating: 4, na: false, followUp: [] }])[0]?.comment).toBe('Saved');
+  });
+  it('rejects conflicting explicit values but accepts mirrored normalized values', () => {
+    expect(issuesOf(saved, 'IMPORT_EXPORT')).toEqual(['answers.0.followUp: this question has no follow-up options']);
+    const conflict = validateAnswers(FORM, saved.map((a, i) => ({ ...a, followUp: [], comment: i ? null : 'Note' })), 'IMPORT_EXPORT');
+    expect(conflict).toMatchObject({ ok: false, issues: [{ path: 'answers.1.comment', message: 'conflicting comments for the same question' }] });
+    expect(validateAnswers(FORM, saved.map((a) => ({ ...a, followUp: [], comment: ' Note ' })), 'IMPORT_EXPORT').ok).toBe(true);
+  });
+  it('consolidates distinct legacy notes without truncation and is idempotent', () => {
+    const legacy = saved.map((a, i) => ({ ...a, comment: (i ? 'e' : 'i').repeat(2000) }));
+    const shared = sharedAnswers(legacy);
+    expect(shared[0]?.comment).toContain('IMPORT: ' + 'i'.repeat(2000));
+    expect(shared[0]?.comment).toContain('EXPORT: ' + 'e'.repeat(2000));
+    expect(shared[1]?.comment).toBe(shared[0]?.comment);
+    expect(sharedAnswers(shared)).toEqual(shared);
   });
 });
