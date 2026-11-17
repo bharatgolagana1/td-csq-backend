@@ -2,11 +2,10 @@
 // participants), move it through the status machine (manual override or the
 // clock) and answer the ACO's "what must I do now" question. The rules live
 // in ./domain/**; this file applies them to storage and the other modules.
-import type { FilterQuery, Types } from 'mongoose';
+import type { ClientSession, FilterQuery, Types } from 'mongoose';
 
 import type { RequestContext } from '../../core/auth/session.js';
 import { isSystemContext, requestContextOf, type AnyContext } from '../../core/auth/system.js';
-import { withTransaction } from '../../core/db.js';
 import { AppError } from '../../core/errors.js';
 import { emit } from '../../core/events.js';
 import { and } from '../../core/filters.js';
@@ -14,7 +13,7 @@ import { idString, toId } from '../../core/ids.js';
 import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportsByIds } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
-import { getMarketShare, putMarketShare, totalsHundred } from '../organisations/market-share.service.js';
+import { auditShareChange, getMarketShare, putMarketShare, totalsHundred } from '../organisations/market-share.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationById, findOrganisationsByIds } from '../organisations/organisations.service.js';
 import { getSettingsDoc, type DEFAULT_SETTINGS } from '../settings/settings.service.js';
@@ -22,6 +21,7 @@ import { getSettingsDoc, type DEFAULT_SETTINGS } from '../settings/settings.serv
 import type { CycleParticipantDoc } from './cycle-participants.model.js';
 import { CycleModel, type CycleDoc, type CycleWindowDoc, type SurveyVersionRefs } from './cycles.model.js';
 import { mailCyclePublished } from './cycles.notify.js';
+import { assertScheduleAvailable, withCycleScheduleTransaction } from './cycles.schedule.js';
 import type {
   CreateCycleInput,
   CurrentCycleDto,
@@ -99,8 +99,8 @@ export async function findCyclesByStatus(statuses: readonly CycleStatus[]): Prom
   return CycleModel.find({ status: { $in: [...statuses] } }).sort({ 'sampling.start.utc': 1 }).lean<CycleDoc[]>();
 }
 
-export async function requireVisibleCycle(ctx: AnyContext, id: string): Promise<CycleDoc> {
-  const doc = await CycleModel.findOne(and<CycleDoc>(cycleScopeFilter(ctx), { _id: toId(id, 'cycleId') })).lean<CycleDoc>();
+export async function requireVisibleCycle(ctx: AnyContext, id: string, session?: ClientSession): Promise<CycleDoc> {
+  const doc = await CycleModel.findOne(and<CycleDoc>(cycleScopeFilter(ctx), { _id: toId(id, 'cycleId') }), null, session ? { session } : {}).lean<CycleDoc>();
   if (!doc) throw new AppError('NOT_FOUND', 'Cycle not found');
   return doc;
 }
@@ -280,8 +280,9 @@ export async function createCycle(ctx: RequestContext, input: CreateCycleInput):
   await assertCodeFree(input.code);
   await assertParticipantIds(input.participatingAirportIds, input.participatingAcoIds);
 
-  const created = (
-    await CycleModel.create({
+  const created = await withCycleScheduleTransaction(async (session) => {
+    await assertScheduleAvailable(windows, session);
+    const [doc] = await CycleModel.create([{
       name: input.name,
       code: input.code,
       type: input.type,
@@ -296,22 +297,28 @@ export async function createCycle(ctx: RequestContext, input: CreateCycleInput):
       surveyVersions: surveyVersionRefs(input.surveyVersions, { DOMESTIC: null, INTERNATIONAL: null }),
       status: 'DRAFT',
       createdBy: toId(ctx.user.id),
-    })
-  ).toObject();
+    }], { session });
+    if (!doc) throw new AppError('INTERNAL', 'Cycle creation failed');
+    return doc.toObject();
+  });
   const dto = await toDetail(created, participantScopeFilter(ctx));
   await audit(ctx, { action: 'cycle.created', entity: 'cycle', entityId: dto.id, after: dto });
   return dto;
 }
 
 export async function updateCycle(ctx: RequestContext, id: string, patch: PatchCycleInput): Promise<CycleDetailDto> {
-  const before = await requireVisibleCycle(ctx, id);
-  assertAnswerModeChangeable(before, patch);
-  if (before.status === 'SCORED' || before.status === 'ARCHIVED') {
-    throw new AppError('PRECONDITION_FAILED', `A ${before.status} cycle can no longer be changed`, { status: before.status });
-  }
-  const $set = before.status === 'DRAFT' ? await draftChanges(before, patch) : publishedChanges(before, patch);
-  const after = Object.keys($set).length === 0 ? before : await CycleModel.findOneAndUpdate({ _id: before._id }, { $set }, { new: true }).lean<CycleDoc>();
-  if (!after) throw new AppError('NOT_FOUND', 'Cycle not found');
+  const { before, after } = await withCycleScheduleTransaction(async (session) => {
+    const before = await requireVisibleCycle(ctx, id, session);
+    assertAnswerModeChangeable(before, patch);
+    if (before.status === 'SCORED' || before.status === 'ARCHIVED') {
+      throw new AppError('PRECONDITION_FAILED', `A ${before.status} cycle can no longer be changed`, { status: before.status });
+    }
+    const $set = before.status === 'DRAFT' ? await draftChanges(before, patch) : publishedChanges(before, patch);
+    if ($set.sampling || $set.assessment || $set.tz) await assertScheduleAvailable({ ...before, ...$set }, session, before._id);
+    const after = Object.keys($set).length === 0 ? before : await CycleModel.findOneAndUpdate({ _id: before._id }, { $set }, { new: true, session }).lean<CycleDoc>();
+    if (!after) throw new AppError('NOT_FOUND', 'Cycle not found');
+    return { before, after };
+  });
   const scope = participantScopeFilter(ctx);
   const [beforeDto, afterDto] = await Promise.all([toDetail(before, scope), toDetail(after, scope)]);
   await audit(ctx, { action: 'cycle.updated', entity: 'cycle', entityId: id, before: beforeDto, after: afterDto });
@@ -456,49 +463,58 @@ async function resolveSurveyVersions(cycle: CycleDoc): Promise<SurveyVersionRefs
 }
 
 /**
- * `POST /cycles/:id/publish`. Guards (all 412): DRAFT, windows ordered and
+ * `POST /cycles/:id/publish`. Guards: schedule available (409), DRAFT (412), windows ordered and
  * sampling not over, participants listed, operators active and eligible,
  * market shares complete, surveys published. Then: market-share snapshot
- * (through organisations), cycle_participants + status in one transaction,
+ * (through organisations), cycle_participants + status in one transaction protected by the schedule lock,
  * audit, ACO-admin e-mails, `cycle.published` and `cycle.transitioned`.
  */
 export async function publishCycle(ctx: RequestContext, id: string, now = new Date()): Promise<CycleDetailDto> {
-  const cycle = await requireVisibleCycle(ctx, id);
-  if (cycle.status !== 'DRAFT') {
-    throw new AppError('PRECONDITION_FAILED', `Cycle is ${cycle.status}; only a DRAFT cycle can be published`, { status: cycle.status });
-  }
-  const validation = validateWindows(cycle, { now });
-  if (!validation.ok) {
-    throw new AppError('PRECONDITION_FAILED', 'Cycle windows are not valid for publishing', { issues: windowIssues(validation.problems) });
-  }
-  if (cycle.participatingAirportIds.length === 0 || cycle.participatingAcoIds.length === 0) {
-    throw new AppError('PRECONDITION_FAILED', 'A cycle needs at least one participating airport and operator');
-  }
-  // The API refuses 0 since 16 Nov 2026; a draft saved before that may still hold it.
-  if (cycle.minSampleSize < 1) {
-    throw new AppError('PRECONDITION_FAILED', 'The minimum sample is at least 1 customer; set it before publishing', { issues: [{ path: 'minSampleSize', message: 'The minimum sample is at least 1 customer' }] });
-  }
-  const operators = await loadParticipatingOperators(cycle);
-  const plans = planParticipants(cycle, operators);
-  const snapshots = await assertMarketSharesComplete(ctx, cycle);
-  const surveyVersions = await resolveSurveyVersions(cycle);
+  const { status, participants, shareChanges } = await withCycleScheduleTransaction(async (session) => {
+    const cycle = await requireVisibleCycle(ctx, id, session);
+    if (cycle.status !== 'DRAFT') {
+      throw new AppError('PRECONDITION_FAILED', `Cycle is ${cycle.status}; only a DRAFT cycle can be published`, { status: cycle.status });
+    }
+    const validation = validateWindows(cycle, { now });
+    if (!validation.ok) {
+      throw new AppError('PRECONDITION_FAILED', 'Cycle windows are not valid for publishing', { issues: windowIssues(validation.problems) });
+    }
+    await assertScheduleAvailable(cycle, session, cycle._id);
+    if (cycle.participatingAirportIds.length === 0 || cycle.participatingAcoIds.length === 0) {
+      throw new AppError('PRECONDITION_FAILED', 'A cycle needs at least one participating airport and operator');
+    }
+    // The API refuses 0 since 16 Nov 2026; a draft saved before that may still hold it.
+    if (cycle.minSampleSize < 1) {
+      throw new AppError('PRECONDITION_FAILED', 'The minimum sample is at least 1 customer; set it before publishing', { issues: [{ path: 'minSampleSize', message: 'The minimum sample is at least 1 customer' }] });
+    }
+    const operators = await loadParticipatingOperators(cycle);
+    const plans = planParticipants(cycle, operators);
+    const snapshots = await assertMarketSharesComplete(ctx, cycle);
+    const surveyVersions = await resolveSurveyVersions(cycle);
 
-  for (const snapshot of snapshots) {
-    await putMarketShare(ctx, snapshot.airportId, { cycleId: id, entries: snapshot.entries, note: `Snapshot at publish of ${cycle.code}` });
-  }
-  const status = statusAfterPublish(cycle, now);
-  const participants = await withTransaction(async (session) => {
+    const shareChanges = [];
+    for (const snapshot of snapshots) {
+      const before = await getMarketShare(ctx, snapshot.airportId, id);
+      await putMarketShare(ctx, snapshot.airportId, { cycleId: id, entries: snapshot.entries, note: `Snapshot at publish of ${cycle.code}` }, session);
+      shareChanges.push({ airportId: snapshot.airportId, before });
+    }
+    const status = statusAfterPublish(cycle, now);
     const updated = await CycleModel.findOneAndUpdate(
       { _id: cycle._id, status: 'DRAFT' },
       { $set: { status, publishedAt: now, publishedBy: toId(ctx.user.id), surveyVersions } },
       { new: true, session },
     ).lean<CycleDoc>();
     if (!updated) throw new AppError('CONFLICT', 'Cycle was published concurrently');
-    return createParticipants(cycle._id, plans, session);
+    const participants = await createParticipants(cycle._id, plans, session);
+    return { status, participants, shareChanges };
   });
 
   const published = await requireVisibleCycle(ctx, id);
   const dto = await toDetail(published, participantScopeFilter(ctx));
+  for (const change of shareChanges) {
+    const after = await getMarketShare(ctx, change.airportId, id);
+    await auditShareChange(ctx, { airportId: change.airportId, cycleId: id, before: change.before, after });
+  }
   await audit(ctx, {
     action: 'cycle.published',
     entity: 'cycle',
@@ -527,7 +543,7 @@ export interface TransitionOptions {
 /**
  * Contract: moves the cycle to `to`. MANUAL goes through `checkManualTransition`
  * (the §6 override); CLOCK through the table's AUTO edges. The status update is
- * atomic on the current status, audited as `cycle.transitioned`, then
+ * serialized with schedule writes (reopening rechecks reservations), audited as `cycle.transitioned`, then
  * `cycle.transitioned` is emitted (after the write, with no session: handlers
  * such as invitations' activation and scoring's run own their own writes).
  */
@@ -535,21 +551,26 @@ export async function transition(ctx: AnyContext, cycleId: string, to: CycleStat
   const now = options.now ?? new Date();
   const trigger = options.trigger ?? (isSystemContext(ctx) ? 'CLOCK' : 'MANUAL');
   if (reason.trim().length === 0) throw new AppError('VALIDATION', 'A reason is required');
-  const cycle = await requireVisibleCycle(ctx, cycleId);
-  const from = cycle.status;
-  if (trigger === 'MANUAL') {
-    const check = checkManualTransition(cycle, to, now);
-    if (!check.ok) {
-      throw new AppError('PRECONDITION_FAILED', check.problems[0]?.message ?? `Cannot move a ${from} cycle to ${to}`, { from, to, problems: check.problems });
+  const { from, updated } = await withCycleScheduleTransaction(async (session) => {
+    const cycle = await requireVisibleCycle(ctx, cycleId, session);
+    const from = cycle.status;
+    if (trigger === 'MANUAL') {
+      const check = checkManualTransition(cycle, to, now);
+      if (!check.ok) {
+        throw new AppError('PRECONDITION_FAILED', check.problems[0]?.message ?? `Cannot move a ${from} cycle to ${to}`, { from, to, problems: check.problems });
+      }
+    } else if (!canAutoTransition(from, to)) {
+      throw new AppError('PRECONDITION_FAILED', `The clock cannot move a ${from} cycle to ${to}`, { from, to });
     }
-  } else if (!canAutoTransition(from, to)) {
-    throw new AppError('PRECONDITION_FAILED', `The clock cannot move a ${from} cycle to ${to}`, { from, to });
-  }
-  const $set: Partial<CycleDoc> = { status: to };
-  if (to === 'SCORED') $set.scoredAt = now;
-  if (MARKET_SHARE_FROZEN_STATUSES.includes(to)) $set.marketShareFrozen = true;
-  const updated = await CycleModel.findOneAndUpdate({ _id: cycle._id, status: from }, { $set }, { new: true }).lean<CycleDoc>();
-  if (!updated) throw new AppError('CONFLICT', 'Cycle status changed concurrently; reload and retry', { cycleId });
+    const isReopen = (from === 'SAMPLING_CLOSED' && to === 'SAMPLING_OPEN') || (from === 'ASSESSMENT_CLOSED' && to === 'ASSESSMENT_OPEN');
+    if (isReopen) await assertScheduleAvailable(cycle, session, cycle._id);
+    const $set: Partial<CycleDoc> = { status: to };
+    if (to === 'SCORED') $set.scoredAt = now;
+    if (MARKET_SHARE_FROZEN_STATUSES.includes(to)) $set.marketShareFrozen = true;
+    const updated = await CycleModel.findOneAndUpdate({ _id: cycle._id, status: from }, { $set }, { new: true, session }).lean<CycleDoc>();
+    if (!updated) throw new AppError('CONFLICT', 'Cycle status changed concurrently; reload and retry', { cycleId });
+    return { from, updated };
+  });
   await audit(requestContextOf(ctx), {
     action: 'cycle.transitioned',
     entity: 'cycle',

@@ -193,7 +193,7 @@ describe('DRAFT: GET and PATCH', () => {
   });
 
   it('takes an answer mode at creation and changes it while DRAFT, audited; a cycle stored without one reads SINGLE', async () => {
-    const created = await superAdmin.post(CYCLES).send({ name: 'Modes', code: 'CSQ-MODES', type: 'DOMESTIC', answerMode: 'IMPORT_EXPORT', initiationDate: dateIn(5), minSampleSize: 5 });
+    const created = await superAdmin.post(CYCLES).send({ name: 'Modes', code: 'CSQ-MODES', type: 'DOMESTIC', answerMode: 'IMPORT_EXPORT', initiationDate: dateIn(50), minSampleSize: 5 });
     expect(created.status).toBe(201);
     expect(created.body.data.answerMode).toBe('IMPORT_EXPORT');
     const id = created.body.data.id as string;
@@ -250,7 +250,7 @@ describe('POST /cycles/:id/publish', () => {
       type: 'BOTH',
       minSampleSize: 1,
       sampling: { start: wall(-10), end: wall(-2) },
-      assessment: { start: wall(-2), end: wall(20) },
+      assessment: { start: wall(-2), end: wall(-1) },
       participatingAirportIds: [del],
       participatingAcoIds: [acoA],
     });
@@ -262,7 +262,7 @@ describe('POST /cycles/:id/publish', () => {
       name: 'Domestic only',
       code: 'CSQ-DOM',
       type: 'DOMESTIC',
-      initiationDate: dateIn(4),
+      initiationDate: dateIn(100),
       minSampleSize: 5,
       participatingAirportIds: [hyd],
       participatingAcoIds: [acoD],
@@ -339,8 +339,8 @@ describe('POST /cycles/:id/publish', () => {
       code: 'CSQ-LIVE',
       type: 'BOTH',
       minSampleSize: 10,
-      sampling: { start: wall(-1), end: wall(5) },
-      assessment: { start: wall(5), end: wall(35) },
+      sampling: { start: wall(-1), end: wall(1) },
+      assessment: { start: wall(1), end: wall(2) },
       participatingAirportIds: [del, bom],
       participatingAcoIds: [acoA, acoB, acoC],
     });
@@ -509,7 +509,7 @@ describe('participants, listeners and monitoring', () => {
     });
     const mails = await mailsFor(cycle2, 'sampling-reminder');
     expect(mails).toHaveLength(2);
-    expect(mails[0]!.subject).toMatch(/^Sampling closes in 5 days · 0 \/ 10 selected · CSQ live$/);
+    expect(mails[0]!.subject).toMatch(/^Sampling closes in 1 day · 0 \/ 10 selected · CSQ live$/);
     expect((await getParticipant(cycle2, acoB))?.reminders.lastAt).toBeTruthy();
     expect((await getParticipant(cycle2, acoA))?.reminders.lastAt).toBeNull();
 

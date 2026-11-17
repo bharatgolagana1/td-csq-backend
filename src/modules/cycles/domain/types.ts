@@ -34,6 +34,11 @@ export const CYCLE_STATUSES: readonly CycleStatus[] = [
   'ARCHIVED',
 ];
 
+/** Actual stored status alone determines date reservations, never publication timestamps. */
+export const RESERVING_CYCLE_STATUSES: readonly CycleStatus[] = [
+  'PUBLISHED', 'SAMPLING_OPEN', 'SAMPLING_CLOSED', 'ASSESSMENT_OPEN',
+];
+
 /** Wall-clock entry in the cycle's time zone, `YYYY-MM-DDTHH:mm` (minute precision, no zone). */
 export type WallClock = string;
 

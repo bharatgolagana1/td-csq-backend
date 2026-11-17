@@ -133,7 +133,7 @@ assessment), `scoring` (scores, airport roll-up, rankings), `reports`
 - **Responses.** Success: `{ data }` or `{ data, meta: { page, pageSize, total } }`.
   Error: `{ error: { code, message, details?, requestId } }`. Codes:
   `VALIDATION` 400, `UNAUTHENTICATED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404,
-  `CONFLICT` 409, `PRECONDITION_FAILED` 412, `RATE_LIMITED` 429, `LINK_EXPIRED`
+  `CONFLICT` 409, `CYCLE_SCHEDULE_OVERLAP` 409, `PRECONDITION_FAILED` 412, `RATE_LIMITED` 429, `LINK_EXPIRED`
   410, `OTP_INVALID` 400, `INTERNAL` 500. Stack traces never leave the server.
 - **Ids** are Mongo ObjectIds serialised as `id` strings. Every document has
   `createdAt`, `updatedAt`; soft-deletable ones have `status`.
@@ -279,6 +279,80 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /cycles/:id/participants` [list] `cycles.view` → per-ACO sampling + assessment progress · `GET /cycles/:id/monitoring` `monitoring.view` → `{ sampling { airports, operators, sampleRequired, sampleLocked, lockedOperators }, assessment { invited, readyToSend, started, completed, pending, completionRate }, byAirport: [{ airportId, iata, name, operators: [{ acoId, name, sampling, invited, readyToSend, completed }] }] }` (`readyToSend` as on the list; `pending` = invited − completed)
 - `POST /cycles/:id/reminders/send` `cycles.operate` `{ kind: SAMPLING|ASSESSMENT, acoId? }` → manual reminder run (otherwise scheduled).
 - `GET /cycles/current` `cycles.view` → the cycle(s) an ACO must act on now, with the cycle strip data `{ cycle, participant, nextDeadline { kind, at } }`.
+
+Cycle schedule exclusion: each stored cycle reserves `[sampling.start.utc,
+assessment.end.utc)` only while PUBLISHED, SAMPLING_OPEN, SAMPLING_CLOSED or
+ASSESSMENT_OPEN. DRAFT, ASSESSMENT_CLOSED, SCORED and ARCHIVED are excluded from
+reservations. Multiple drafts may overlap without blocking each other.
+Early assessment closure releases dates immediately without modifying stored window
+edges; sampling closure keeps dates reserved because assessment is pending.
+Physical deletion removes a reservation. Creation, schedule/time-zone edits,
+publishing, end-date extensions and reopening check the final resolved schedule, after merging
+partial updates and deriving dates, excluding the edited cycle. Two intervals
+conflict exactly when `other.start < candidate.end && other.end > candidate.start`;
+UTC comparison follows conversion from each cycle's IANA zone. Touching boundaries
+are valid. Existing window-order validation and authorization still apply.
+Draft creation and edits validate selected windows against existing reservations
+without acquiring a reservation themselves. Publishing and reopening atomically
+recheck the final schedule; only one of concurrent overlapping draft publications
+can succeed.
+
+A conflict returns HTTP 409 `CYCLE_SCHEDULE_OVERLAP` with the validation message
+"Another cycle is already scheduled during these dates", without scheduling
+advice or additional notifications. The response includes
+`details.conflicts: [{ id, code, name, tz, endsAt }]` containing every conflict
+(`endsAt` is the assessment closing instant as an ISO UTC timestamp).
+Calendar availability reuses the existing paginated `GET /cycles` summaries:
+`id`, `status`, `tz`, `sampling` and `assessment` already include all needed data.
+PLATFORM scheduling clients fetch all pages without filters that hide reservations,
+filter reserving statuses and exclude the edited id. `/cycles/current` is scoped
+to operator actions and must not be used as a global availability source.
+Keep all dates visible and disable reserved days in the frontend, without
+availability notices or moving the minimum date to the latest closing time.
+Resolve each day's start and next day's start in the explicit calendar time zone;
+compare UTC intervals using the same strict overlap inequalities, including DST.
+Midnight ends are exclusive; avoid truncating UTC timestamps to calendar dates.
+The shared Initiation date / Sampling window component needs no backend change.
+Server validation remains authoritative for ranges and concurrent requests.
+
+`cycles.schedule.ts` acquires a real write on the singleton `global` document in
+`cycle_schedule_locks` as the first operation of each schedule transaction.
+Concurrent writers conflict on that document and the MongoDB driver retries the
+whole transaction with a fresh snapshot before checking again. A query alone
+inside a transaction would allow concurrent overlapping inserts (write skew).
+Updates read the current cycle inside that transaction before merging the patch.
+All status transitions use the same lock, serializing reservation release and
+reacquisition with schedule writes. `SAMPLING_CLOSED -> SAMPLING_OPEN` and
+`ASSESSMENT_CLOSED -> ASSESSMENT_OPEN` recheck conflicts before any status write.
+Reopening still requires a future window end and an allowed transition under the
+existing permissions. A failed reopening leaves status, schedules, audit and events
+unchanged; successful transitions keep the existing audit and event behavior.
+Publishing checks before any writes, then writes market-share snapshots,
+participants and cycle status in the same transaction. Audits, mail and events run
+only after commit, outside the retried callback. Existing cycles are preserved;
+there is no schedule migration or automatic rescheduling. The lock initializes
+automatically. Direct database scripts that write schedules must use the same
+transaction helper to preserve this invariant.
+
+Reservation checks read the actual `cycles.status` using the shared
+`RESERVING_CYCLE_STATUSES` allowlist. Neither `publishedAt` nor other historical
+metadata makes a DRAFT reserve dates. All create/edit, publish and reopening
+guards use this same query. `cycle_schedule_locks` contains only a transaction
+serialization counter, not cycle reservations or date ranges. There is no unique
+date index or separate reservation table in this implementation; do not delete
+drafts or change their dates to clear a conflict.
+
+Regression example: CSQ 2026 Q3 (`CSQ-26Q3`), DRAFT in Asia/Kolkata, with sampling
+26-27 Dec 2026 and assessment 27-28 Dec 2026, must allow Q4 to save a sampling
+start of 26 Dec 2026 unless an actually reserved cycle overlaps. Q3 must never
+appear in conflict details, even if it carries stale publication metadata.
+
+`npm start` runs the compiled `dist/server.js` without watching for changes.
+After scheduling code changes, run `npm run build` and restart that backend
+process. Rebuilding alone does not replace modules already loaded by a running
+Node process. If a draft is still named in a conflict, verify the running build
+and its database before attempting any data repair.
+
 
 ### customers (ACO scope; PLATFORM may pass `acoId`)
 - `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate` · `DELETE /customers/:id` `customers.delete` (204; drops the customer from selections that are not locked; 412 while it is in a locked sample of a running cycle — the `customer.deleted` event, which sampling handles inside the delete transaction)

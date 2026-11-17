@@ -97,9 +97,10 @@ export async function getMarketShare(ctx: RequestContext, airportId: string, cyc
 /**
  * Replaces the whole set for (airport, cycle). Validates every operator is an
  * ACO at this airport, no duplicates, and the total is 100 ± 0.01; refuses
- * when the cycle is frozen. Audited as `marketshare.updated`.
+ * when the cycle is frozen. Audited as `marketshare.updated`. With a caller's
+ * session, writes join that transaction; the caller must audit after commit.
  */
-export async function putMarketShare(ctx: RequestContext, airportId: string, input: MarketShareInput): Promise<MarketShareDto> {
+export async function putMarketShare(ctx: RequestContext, airportId: string, input: MarketShareInput, session?: ClientSession): Promise<MarketShareDto> {
   assertAirportVisible(ctx, airportId);
   const airport = await requireAirport(airportId).catch(() => null);
   if (!airport) throw new AppError('NOT_FOUND', 'Airport not found');
@@ -131,12 +132,12 @@ export async function putMarketShare(ctx: RequestContext, airportId: string, inp
   if (issues.length > 0) throw new AppError('VALIDATION', 'Invalid market-share set', { issues });
 
   const cycleOid = cycleId ? toId(cycleId) : null;
-  const before = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid));
-  await withTransaction((session) =>
-    writeShareSet({ airportId: airport._id, cycleId: cycleOid, entries: input.entries, setBy: toId(ctx.user.id), note: input.note ?? null }, session),
-  );
-  const after = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid));
-  await auditShareChange(ctx, { airportId, cycleId, before, after });
+  const before = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid, session));
+  const inputSet = { airportId: airport._id, cycleId: cycleOid, entries: input.entries, setBy: toId(ctx.user.id), note: input.note ?? null };
+  if (session) await writeShareSet(inputSet, session);
+  else await withTransaction((ownSession) => writeShareSet(inputSet, ownSession));
+  const after = await toDto(airportId, cycleId, await loadSet(airport._id, cycleOid, session));
+  if (!session) await auditShareChange(ctx, { airportId, cycleId, before, after });
   return after;
 }
 
