@@ -584,6 +584,11 @@ describe('history, masking, tenancy and export', () => {
   beforeAll(async () => {
     // The customer-assessment tasks are not ACO_ADMIN defaults; these tests are about masking with them granted (without: the last block).
     await grantTasks('ACO_ADMIN', CUSTOMER_TASKS);
+    // Save the self-assessment so identity and export checks exercise a visible draft.
+    const self = await getOrCreateSelf(ctxOf(adminB), cycle.id, 'DOMESTIC');
+    await patchAnswers(self.id, [{ questionId: domestic.q['Q.OPT']!, rating: 4 }]);
+    const internationalDraft = await getOrCreateForInvitation(invitation(cbCustomerA, idString(adminA.org._id), 'INTERNATIONAL'));
+    await patchAnswers(internationalDraft.id, [{ questionId: international.q['Q.OPT']!, rating: 4 }]);
     const b = await getOrCreateForInvitation(invitation(customerB, idString(adminB.org._id)));
     submittedB = b.id;
     await patchAnswers(submittedB, [
@@ -599,7 +604,7 @@ describe('history, masking, tenancy and export', () => {
   it('PLATFORM lists every assessment with full identity, filters and a 1 dp own score', async () => {
     const all = await superAdmin.get('/api/v1/assessments?sort=startedAt&pageSize=50');
     expect(all.status).toBe(200);
-    expect(all.body.meta.total).toBe(await AssessmentModel.countDocuments());
+    expect(all.body.meta.total).toBe(await AssessmentModel.countDocuments({ $or: [{ status: 'SUBMITTED' }, { status: 'DRAFT', lastSavedAt: { $ne: null } }] }));
     const row = (all.body.data as { id: string; cycle: { code: string }; operator: { code: string }; assessorName: string; assessor: { revealed: boolean; email: string }; customerId: string; score: number }[]).find((r) => r.id === submittedB)!;
     expect(row).toMatchObject({
       cycle: { id: cycle.id, code: 'CSQ-2026-1', name: 'Cycle CSQ-2026-1' },
@@ -621,13 +626,13 @@ describe('history, masking, tenancy and export', () => {
     expect((byStatus.body.data as { status: string }[]).every((r) => r.status === 'SUBMITTED')).toBe(true);
     expect(byStatus.body.meta.total).toBe(3);
     const selfOnly = await superAdmin.get(`/api/v1/assessments?kind=SELF&cycleId=${cycle.id}`);
-    expect((selfOnly.body.data as { kind: string }[]).map((r) => r.kind)).toEqual(['SELF', 'SELF', 'SELF']);
+    expect((selfOnly.body.data as { kind: string }[]).map((r) => r.kind)).toEqual(['SELF', 'SELF']);
     const cb = await superAdmin.get('/api/v1/assessments?customerType=CB');
     expect(cb.body.meta.total).toBeGreaterThan(0);
     expect((cb.body.data as { customerType: string }[]).every((r) => r.customerType === 'CB')).toBe(true);
     const intl = await superAdmin.get('/api/v1/assessments?surveyType=INTERNATIONAL');
-    // The CB customer's INTERNATIONAL assessment and ACO-A's INTERNATIONAL self-assessment.
-    expect(intl.body.meta.total).toBe(2);
+    // ACO-A's never-saved INTERNATIONAL self-assessment is excluded.
+    expect(intl.body.meta.total).toBe(1);
     expect((intl.body.data as { surveyType: string }[]).every((r) => r.surveyType === 'INTERNATIONAL')).toBe(true);
     const acoB = await superAdmin.get(`/api/v1/assessments?acoId=${idString(adminB.org._id)}`);
     expect(acoB.body.meta.total).toBe(2);
@@ -842,12 +847,12 @@ describe('history order', () => {
   const ids: Record<string, string> = {};
 
   /** One customer assessment of ACO-A in the order cycle, its dates set as given. */
-  async function assessmentAt(name: string, at: { submittedAt?: Date; lastSavedAt?: Date | null }): Promise<void> {
+  async function assessmentAt(name: string, at: { startedAt: Date; submittedAt?: Date; lastSavedAt?: Date | null }): Promise<void> {
     const created = await getOrCreateForInvitation(invitation(ffCustomerA, idString(adminA.org._id), 'DOMESTIC', order.id));
     ids[name] = created.id;
     await AssessmentModel.updateOne(
       { _id: toId(created.id) },
-      { $set: { status: at.submittedAt ? 'SUBMITTED' : 'DRAFT', submittedAt: at.submittedAt ?? null, lastSavedAt: at.lastSavedAt ?? null } },
+      { $set: { startedAt: at.startedAt, status: at.submittedAt ? 'SUBMITTED' : 'DRAFT', submittedAt: at.submittedAt ?? null, lastSavedAt: at.lastSavedAt ?? null } },
     );
   }
 
@@ -861,30 +866,58 @@ describe('history order', () => {
       participants: [{ org: adminA.org, surveyTypes: ['DOMESTIC', 'INTERNATIONAL'] }],
     });
     const now = Date.now();
-    // Created in this order, so _id order differs from the expected one.
-    await assessmentAt('submittedHourAgo', { submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 120 * MINUTE) });
-    await assessmentAt('draftSavedJustNow', { lastSavedAt: new Date(now - 5 * MINUTE) });
-    await assessmentAt('submittedLatest', { submittedAt: new Date(now - 10 * MINUTE), lastSavedAt: new Date(now - 11 * MINUTE) });
-    await assessmentAt('draftNeverSaved', { lastSavedAt: null });
-    await assessmentAt('submittedHourAgoToo', { submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 90 * MINUTE) });
-    await assessmentAt('draftSavedEarlier', { lastSavedAt: new Date(now - 30 * MINUTE) });
+    // Explicit start times keep the default order independent of test execution speed.
+    await assessmentAt('submittedHourAgo', { startedAt: new Date(now - 180 * MINUTE), submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 120 * MINUTE) });
+    await assessmentAt('draftSavedJustNow', { startedAt: new Date(now - 150 * MINUTE), lastSavedAt: new Date(now - 5 * MINUTE) });
+    await assessmentAt('submittedLatest', { startedAt: new Date(now - 120 * MINUTE), submittedAt: new Date(now - 10 * MINUTE), lastSavedAt: new Date(now - 11 * MINUTE) });
+    await assessmentAt('draftNeverSaved', { startedAt: new Date(now - 110 * MINUTE), lastSavedAt: null });
+    await assessmentAt('submittedHourAgoToo', { startedAt: new Date(now - 100 * MINUTE), submittedAt: new Date(now - 60 * MINUTE), lastSavedAt: new Date(now - 90 * MINUTE) });
+    await assessmentAt('draftSavedEarlier', { startedAt: new Date(now - 70 * MINUTE), lastSavedAt: new Date(now - 30 * MINUTE) });
   });
 
-  it('lists the newest submission first by default, then the drafts by their latest save, and carries each row’s last save', async () => {
+  it('lists both statuses by startedAt descending by default and carries each row’s last save', async () => {
     const res = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}`);
     expect(res.status).toBe(200);
-    expect(names(res.body.data)).toEqual(['submittedLatest', 'submittedHourAgoToo', 'submittedHourAgo', 'draftSavedJustNow', 'draftSavedEarlier', 'draftNeverSaved']);
+    expect(names(res.body.data)).toEqual(['draftSavedEarlier', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedJustNow', 'submittedHourAgo']);
+    expect(res.body.meta.total).toBe(5);
     const draft = (res.body.data as { id: string; lastSavedAt: string | null; submittedAt: string | null; answerMode: string }[]).find((row) => row.id === ids['draftSavedJustNow']);
     expect(draft).toMatchObject({ submittedAt: null, answerMode: 'SINGLE' });
     expect(draft?.lastSavedAt).toBe((await AssessmentModel.findById(ids['draftSavedJustNow']).lean())?.lastSavedAt?.toISOString());
-    expect((res.body.data as { id: string; lastSavedAt: string | null }[]).find((row) => row.id === ids['draftNeverSaved'])?.lastSavedAt).toBeNull();
-    // `sort=-submittedAt` is the same order.
-    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-submittedAt`)).body.data)).toEqual(names(res.body.data));
+    expect(names(res.body.data)).not.toContain('draftNeverSaved');
+    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-startedAt`)).body.data)).toEqual(names(res.body.data));
+    // Explicit submission sorting retains its existing behavior.
+    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-submittedAt`)).body.data)).toEqual(['submittedLatest', 'submittedHourAgoToo', 'submittedHourAgo', 'draftSavedJustNow', 'draftSavedEarlier']);
+  });
+
+  it('filters each status before pagination, reports filtered totals, and restores both when omitted', async () => {
+    for (const [status, expected] of [
+      ['SUBMITTED', ['submittedHourAgoToo', 'submittedLatest', 'submittedHourAgo']],
+      ['DRAFT', ['draftSavedEarlier', 'draftSavedJustNow']],
+    ] as const) {
+      const paged: (string | undefined)[] = [];
+      for (const page of [1, 2]) {
+        const res = await adminA.get(`/api/v1/assessments?cycleId=${order.id}&kind=CUSTOMER&surveyType=DOMESTIC&customerType=FF&status=${status}&pageSize=2&page=${page}`);
+        expect(res.status).toBe(200);
+        expect(res.body.meta).toEqual({ page, pageSize: 2, total: expected.length });
+        expect(res.body.data).toHaveLength(page === 1 ? 2 : expected.length - 2);
+        for (const row of res.body.data) {
+          expect(row).toMatchObject({ status, kind: 'CUSTOMER', surveyType: 'DOMESTIC', customerType: 'FF', customerId: null, assessor: { revealed: false } });
+        }
+        paged.push(...names(res.body.data));
+      }
+      expect(paged).toEqual(expected);
+    }
+    const restored = await adminA.get(`/api/v1/assessments?cycleId=${order.id}`);
+    expect(restored.body.meta.total).toBe(5);
+    expect(names(restored.body.data)).toEqual(['draftSavedEarlier', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedJustNow', 'submittedHourAgo']);
+    const otherOperator = await adminB.get(`/api/v1/assessments?cycleId=${order.id}&status=DRAFT`);
+    expect(otherOperator.body.data).toEqual([]);
+    expect(otherOperator.body.meta.total).toBe(0);
   });
 
   it('keeps the drafts after the submitted rows when sorted oldest submission first', async () => {
     const res = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=submittedAt`);
-    expect(names(res.body.data)).toEqual(['submittedHourAgo', 'submittedHourAgoToo', 'submittedLatest', 'draftNeverSaved', 'draftSavedEarlier', 'draftSavedJustNow']);
+    expect(names(res.body.data)).toEqual(['submittedHourAgo', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedEarlier', 'draftSavedJustNow']);
   });
 
   it('pages through the same order without a row missing or repeated, and sorts by the last save on request', async () => {
@@ -893,7 +926,7 @@ describe('history order', () => {
     for (const page of [1, 2, 3]) paged.push(...names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&pageSize=2&page=${page}`)).body.data));
     expect(paged).toEqual(all);
     const bySave = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-lastSavedAt`);
-    expect(names(bySave.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo', 'draftNeverSaved']);
+    expect(names(bySave.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo']);
   });
 
   it('gives a draft no score in the list, the return or the export until it is submitted; its answers are still there', async () => {
@@ -920,6 +953,39 @@ describe('history order', () => {
     } finally {
       await AssessmentModel.updateOne({ _id: toId(id) }, { $set: { status: 'DRAFT', submittedAt: null } });
     }
+  });
+
+  it('shares saved-draft visibility with CSV, retains submissions without saves, and leaves drafts available for saving', async () => {
+    const now = new Date();
+    await assessmentAt('submittedWithoutSave', { startedAt: now, submittedAt: now, lastSavedAt: null });
+    await assessmentAt('draftMissingSave', { startedAt: now });
+    await AssessmentModel.updateOne({ _id: ids['draftMissingSave'] }, { $unset: { lastSavedAt: 1 } });
+    const hiddenIds = [ids['draftNeverSaved'], ids['draftMissingSave']];
+    const before = await AssessmentModel.find({ _id: { $in: hiddenIds } }).lean();
+    const count = await AssessmentModel.countDocuments();
+    for (const status of ['', 'DRAFT', 'SUBMITTED']) {
+      const query = `cycleId=${order.id}${status ? `&status=${status}` : ''}`;
+      const list = await superAdmin.get(`/api/v1/assessments?${query}`);
+      expect(list.status).toBe(200);
+      expect(list.body.meta.total).toBe(status === 'DRAFT' ? 2 : status === 'SUBMITTED' ? 4 : 6);
+      const visibleIds = (list.body.data as { id: string }[]).map((row) => row.id);
+      for (const id of hiddenIds) expect(visibleIds).not.toContain(id);
+      if (status !== 'DRAFT') expect(visibleIds).toContain(ids['submittedWithoutSave']);
+      const csv = await superAdmin.get(`/api/v1/assessments/export?${query}`);
+      expect(csv.status).toBe(200);
+      const exportedIds = [...new Set(csv.text.trim().split('\n').slice(1).map((line) => line.split(',')[0]))];
+      expect(exportedIds.sort()).toEqual(visibleIds.sort());
+    }
+    expect(await AssessmentModel.countDocuments()).toBe(count);
+    expect(await AssessmentModel.find({ _id: { $in: hiddenIds } }).lean()).toEqual(before);
+    const id = ids['draftNeverSaved']!;
+    expect((await getDraft(id)).status).toBe('DRAFT');
+    expect((await superAdmin.get(`/api/v1/assessments/${id}`)).status).toBe(200);
+    await patchAnswers(id, [{ questionId: domestic.q['Q.OPT']!, rating: 4 }]);
+    const saved = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&status=DRAFT`);
+    expect(saved.body.meta.total).toBe(3);
+    expect(saved.body.data).toContainEqual(expect.objectContaining({ id, lastSavedAt: expect.any(String) }));
+    expect(await AssessmentModel.countDocuments()).toBe(count);
   });
 
   it('historySort puts the default order behind any requested key', () => {

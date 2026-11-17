@@ -595,11 +595,11 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
 
 const SORTABLE = ['submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
 
-/** Newest submission first, then the drafts by their latest save, then by start; `_id` last so a page boundary never splits ties differently. */
+/** Compatibility tie-breakers for requested sorts; `_id` keeps page boundaries stable. */
 const HISTORY_ORDER: SortSpec = { submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 };
 
 /**
- * The history's sort: the requested keys, then the default order for ties.
+ * The history's sort: the requested keys, then compatibility tie-breakers.
  * Sorting by `submittedAt` (either way) keeps the drafts, which have none,
  * after every submitted row — `status` descending comes first, as
  * 'SUBMITTED' sorts after 'DRAFT' — and orders the drafts by their latest
@@ -615,6 +615,14 @@ export function historySort(requested: SortSpec): SortSpec {
   return spec;
 }
 
+/** History includes submissions and saved drafts, never drafts merely opened. */
+const HISTORY_FILTER: FilterQuery<AssessmentDoc> = {
+  $or: [
+    { status: 'SUBMITTED' },
+    { status: 'DRAFT', lastSavedAt: { $exists: true, $ne: null } },
+  ],
+};
+
 export async function listAssessments(ctx: RequestContext, query: AssessmentListQuery): Promise<Page<HistoryRowDto>> {
   const requested: FilterQuery<AssessmentDoc> = {};
   if (query.cycleId) requested.cycleId = toId(query.cycleId);
@@ -623,8 +631,8 @@ export async function listAssessments(ctx: RequestContext, query: AssessmentList
   if (query.status) requested.status = query.status;
   if (query.customerType) requested.customerType = query.customerType;
   if (query.surveyType) requested.surveyType = query.surveyType;
-  const filter = and<AssessmentDoc>(scopeFilter(ctx), requested);
-  const sort = historySort(parseSort(query.sort, SORTABLE, '-submittedAt'));
+  const filter = and<AssessmentDoc>(scopeFilter(ctx), HISTORY_FILTER, requested);
+  const sort = historySort(parseSort(query.sort, SORTABLE, '-startedAt'));
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     AssessmentModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AssessmentDoc[]>(),
@@ -718,7 +726,7 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
   if (query.acoId) requested.acoId = toId(query.acoId);
   if (kind) requested.kind = kind;
   if (query.status) requested.status = query.status;
-  const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
+  const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), HISTORY_FILTER, requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
   const rows = await toHistoryRows(ctx, docs);
 
   const forms = new Map<string, AssessmentForm>();
