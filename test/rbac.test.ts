@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { idString } from '../src/core/ids.js';
+import { migrateSuperAdminGrants } from '../src/modules/identity/rbac.migration.js';
+import { RoleTaskModel } from '../src/modules/identity/role-tasks.model.js';
+import { TaskModel } from '../src/modules/identity/tasks.model.js';
 import { getRbacVersion } from '../src/modules/settings/settings.service.js';
 import { DEFAULT_MATRIX, resolvePatterns } from '../src/seed/matrix.js';
 
 import { createTestApp, type TestApp, type TestUser } from './helpers/app.js';
-import { expectError } from './helpers/fixtures.js';
+import { expectError, revokeTasks } from './helpers/fixtures.js';
 
 let t: TestApp;
 let superAdmin: TestUser;
@@ -21,6 +24,25 @@ beforeAll(async () => {
 afterAll(() => t.close());
 
 describe('requireTask', () => {
+  it('repairs missing and disabled Super Admin grants on existing installs and refreshes /me', async () => {
+    const task = await TaskModel.findOne({ code: 'customers.delete' }).lean();
+    expect((await superAdmin.get('/api/v1/me')).body.data.active.tasks).toContain('customers.delete');
+    for (const missing of [true, false]) {
+      if (missing) {
+        await RoleTaskModel.deleteOne({ roleId: superAdmin.role._id, taskId: task!._id });
+      } else {
+        await revokeTasks('SUPER_ADMIN', ['customers.delete']);
+        expect((await superAdmin.get('/api/v1/me')).body.data.active.tasks).not.toContain('customers.delete');
+      }
+      const version = await getRbacVersion();
+      await migrateSuperAdminGrants();
+      expect(await getRbacVersion()).toBe(version + 1);
+      expect((await superAdmin.get('/api/v1/me')).body.data.active.tasks).toContain('customers.delete');
+      await migrateSuperAdminGrants();
+      expect(await getRbacVersion()).toBe(version + 1);
+      expect((await acoUser.get('/api/v1/me')).body.data.active.tasks).not.toContain('customers.delete');
+    }
+  });
   it('403s a role without the task and names it', async () => {
     const error = expectError(await acoUser.get('/api/v1/users'), 403, 'FORBIDDEN');
     expect(error.details).toEqual({ task: 'users.view' });
@@ -39,6 +61,13 @@ describe('requireTask', () => {
 });
 
 describe('PUT /roles/matrix', () => {
+  it('keeps the Super Admin matrix locked even when roles.manage is retained', async () => {
+    const matrix = await superAdmin.get('/api/v1/roles/matrix');
+    const roles = matrix.body.data.roles as { id: string; code: string; tasks: string[] }[];
+    const role = roles.find((entry) => entry.code === 'SUPER_ADMIN')!;
+    expectError(await superAdmin.put('/api/v1/roles/matrix').send({ roles: [{ roleId: role.id, tasks: role.tasks.filter((code) => code !== 'customers.delete') }] }), 412, 'PRECONDITION_FAILED');
+    expect((await superAdmin.get('/api/v1/me')).body.data.active.tasks).toContain('customers.delete');
+  });
   it('returns the matrix with every task and seeded role', async () => {
     const res = await superAdmin.get('/api/v1/roles/matrix');
     expect(res.status).toBe(200);

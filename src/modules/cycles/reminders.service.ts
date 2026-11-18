@@ -5,13 +5,14 @@
 // its sender in through `registerAssessmentReminderSender`.
 import type { Logger } from 'pino';
 
+import { assertScope, assertTask } from '../../core/auth/rbac.js';
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
 import { once } from '../../core/scheduler.js';
 
-import { CycleParticipantModel, type CycleParticipantDoc } from './cycle-participants.model.js';
+import type { CycleParticipantDoc } from './cycle-participants.model.js';
 import type { CycleDoc } from './cycles.model.js';
 import { mailSamplingReminder } from './cycles.notify.js';
 import type { ReminderRunDto, SendRemindersInput } from './cycles.schemas.js';
@@ -119,6 +120,9 @@ async function unlockedParticipants(cycle: CycleDoc, acoId: string | undefined):
  * the sender the invitations module registered; 412 while none is registered.
  */
 export async function sendRemindersNow(ctx: RequestContext, cycleId: string, input: SendRemindersInput, now = new Date()): Promise<ReminderRunDto> {
+  assertTask(ctx, 'cycles.operate');
+  assertTask(ctx, 'notifications.send');
+  assertScope(ctx, 'PLATFORM');
   const cycle = await requireVisibleCycle(ctx, cycleId);
   if (input.kind === 'ASSESSMENT') {
     if (assessmentReminderSender === null) {
@@ -127,7 +131,7 @@ export async function sendRemindersNow(ctx: RequestContext, cycleId: string, inp
     const result = await assessmentReminderSender(cycleId, now, input.acoId);
     return { kind: 'ASSESSMENT', sent: result.sent, recipients: [] };
   }
-  if (cycle.status !== 'SAMPLING_OPEN') {
+  if (cycle.status !== 'SAMPLING_OPEN' || now < cycle.sampling.start.utc || now >= cycle.sampling.end.utc) {
     const when = cycle.status === 'DRAFT' || cycle.status === 'PUBLISHED' ? 'Sampling has not opened yet' : 'Sampling is over';
     throw new AppError('PRECONDITION_FAILED', `${when}: sampling reminders can only be sent while sampling is open`, { status: cycle.status });
   }
@@ -135,8 +139,7 @@ export async function sendRemindersNow(ctx: RequestContext, cycleId: string, inp
   const recipients: ReminderRunDto['recipients'] = [];
   let sent = 0;
   for (const participant of participants) {
-    const mail = await mailSamplingReminder(cycle, participant, now);
-    await CycleParticipantModel.updateOne({ _id: participant._id }, { $set: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
+    const mail = await mailSamplingReminder(cycle, participant, now, ctx);
     recipients.push(mail);
     sent += mail.to.length;
   }

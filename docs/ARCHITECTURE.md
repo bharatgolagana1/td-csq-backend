@@ -190,7 +190,12 @@ database authorises.
   or airport role holds `assessments.scores` or `assessments.details` by
   default (individual customer assessments, §6); an administrator grants
   them in the matrix. Saving the matrix bumps `settings.rbacVersion`; the RBAC cache keys
-  on it.
+  on it. The system SUPER_ADMIN matrix is locked: API saves cannot remove a
+  task. Startup (after task sync/settings) and `npm run seed` reconcile all
+  its grants, including missing or disabled `customers.delete`, and bump
+  `rbacVersion` transactionally when a repair occurs. Deploy and restart
+  each backend instance to run this idempotent migration; no manual database
+  edit or frontend role-name bypass is required. Other roles retain their grants.
 - `memberships` `{ userId, orgId, roleId, status: ACTIVE|INACTIVE }`. A user
   may belong to several organisations. The active organisation is the header
   `x-csq-org: <orgId>`; without it, the first active membership.
@@ -277,7 +282,9 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `POST /cycles/:id/publish` `cycles.publish` → validations: windows ordered, every participating airport's market shares total 100 (snapshot copied to `market_shares` with `cycleId`), surveys published; creates `cycle_participants`; e-mails ACO admins ("Commencement of assessment cycle"); status PUBLISHED (or SAMPLING_OPEN if the sampling window already started).
 - `POST /cycles/:id/transition` `cycles.operate` `{ to: SAMPLING_OPEN|SAMPLING_CLOSED|ASSESSMENT_OPEN|ASSESSMENT_CLOSED|SCORED|ARCHIVED, reason }` → manual, audited override of the clock (the scheduler performs the same transitions automatically at the window instants).
 - `GET /cycles/:id/participants` [list] `cycles.view` → per-ACO sampling + assessment progress · `GET /cycles/:id/monitoring` `monitoring.view` → `{ sampling { airports, operators, sampleRequired, sampleLocked, lockedOperators }, assessment { invited, readyToSend, started, completed, pending, completionRate }, byAirport: [{ airportId, iata, name, operators: [{ acoId, name, sampling, invited, readyToSend, completed }] }] }` (`readyToSend` as on the list; `pending` = invited − completed)
-- `POST /cycles/:id/reminders/send` `cycles.operate` `{ kind: SAMPLING|ASSESSMENT, acoId? }` → manual reminder run (otherwise scheduled).
+- `POST /cycles/:id/reminders/send` requires `cycles.operate` and `notifications.send`, in PLATFORM scope. `{ kind: SAMPLING|ASSESSMENT, acoId? }` → manual reminder run (otherwise scheduled). SAMPLING validates the actual sampling window as well as cycle status; a target must participate and have an unlocked sample. Response remains `{ kind, sent, recipients: [{ acoId, to }] }`; `sent` counts successful recipient deliveries only. Manual sampling sends use the existing atomic jobs claim per cycle/operator/recipient and UTC half-day (00:00–12:00, 12:00–24:00). Repeated/in-flight sends in that slot return zero for suppressed recipients; failed recipients may be retried, successful recipients are not repeated. A new slot permits another reminder, including immediately across a slot boundary. No idempotency header is required. Frontend must retain `acoId`, require both tasks, handle zero as suppressed/no eligible recipients, and show structured delivery errors. Notification history records failures; manual deliveries are audited.
+
+  As with scheduled jobs, a process interruption can leave a RUNNING claim requiring operator review; do not clear it without checking notification history. SMTP acceptance and database state are not one atomic transaction. Before retrying after a crash, reconcile delivery history to avoid duplicating accepted mail.
 - `GET /cycles/current` `cycles.view` → the cycle(s) an ACO must act on now, with the cycle strip data `{ cycle, participant, nextDeadline { kind, at } }`.
 
 Cycle schedule exclusion: each stored cycle reserves `[sampling.start.utc,
@@ -355,7 +362,7 @@ and its database before attempting any data repair.
 
 
 ### customers (ACO scope; PLATFORM may pass `acoId`)
-- `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate` · `DELETE /customers/:id` `customers.delete` (204; drops the customer from selections that are not locked; 412 while it is in a locked sample of a running cycle — the `customer.deleted` event, which sampling handles inside the delete transaction)
+- `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate` · `DELETE /customers/:id` `customers.delete` (204; accepts optional `?acoId=` operator context and rejects a mismatched customer with 404; drops the customer from selections that are not locked; 412 while it is in a locked sample of a running cycle — the `customer.deleted` event, which sampling handles inside the delete transaction)
 - `GET /customers/import/template` → CSV template · `POST /customers/import/validate` (multipart CSV) → `{ importId, rows, accepted, rejected, errors[], preview[] }` · `POST /customers/import/:importId/commit` → creates/updates customers (transaction).
 - `GET /customers/:id/participation` → cycles the customer was sampled in and whether they submitted.
 - `GET /customers/eligible?cycleId=` [list] `customers.view` (filters `surveyType, type`; `q` over name, e-mail, contact) → `[{ customer, surveyType, key }]`: the operator's eligible entries for the cycle, expanded by the sampling rule (a BOTH customer in a BOTH cycle is two rows) and paginated server-side; 404 when the cycle is not visible or the operator is not a participant.

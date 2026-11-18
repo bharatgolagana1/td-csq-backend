@@ -4,6 +4,7 @@
 import { idString } from '../core/ids.js';
 import { seedAirports } from '../modules/airports/airports.service.js';
 import { grantTasksIfAbsent, listTasks } from '../modules/identity/matrix.service.js';
+import { migrateSuperAdminGrants } from '../modules/identity/rbac.migration.js';
 import { upsertSeedRoles } from '../modules/identity/roles.service.js';
 import { syncModuleTasks } from '../modules/index.js';
 import { ensureAcfiOrganisation } from '../modules/organisations/organisations.service.js';
@@ -42,6 +43,7 @@ export async function seedCore(options: SeedCoreOptions = {}): Promise<SeedCoreR
   }
   await ensureSettings();
   await bumpRbacVersion();
+  await migrateSuperAdminGrants();
 
   const acfi = await ensureAcfiOrganisation();
   const airports = options.airports === false ? null : await seedAirports();

@@ -8,6 +8,7 @@ import { scheduler } from './core/scheduler.js';
 import { APP_NAME, APP_VERSION } from './core/version.js';
 import { registerJobs } from './jobs/index.js';
 import { migrateSharedComments } from './modules/assessments/assessments.migration.js';
+import { migrateSuperAdminGrants } from './modules/identity/rbac.migration.js';
 import { syncModuleTasks, validateModules } from './modules/index.js';
 import { migrateScoreDirections } from './modules/scoring/scores.migration.js';
 import { ensureSettings } from './modules/settings/settings.service.js';
@@ -21,6 +22,7 @@ await migrateScoreDirections();
 await migrateSharedComments();
 await syncModuleTasks();
 await ensureSettings();
+await migrateSuperAdminGrants();
 
 const app = createApp({ env, verifyToken: createTokenVerifier(env) });
 

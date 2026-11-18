@@ -4,14 +4,18 @@
 // functions; never their models.
 import type { Types } from 'mongoose';
 
+import type { RequestContext } from '../../core/auth/session.js';
+import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
+import { once } from '../../core/scheduler.js';
+import { audit } from '../audit/audit.service.js';
 import { listActiveUserIdsInOrg, listMembershipsForUsers } from '../identity/memberships.service.js';
 import { findUserById } from '../identity/users.service.js';
 import { send } from '../notifications/notifications.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationsByIds } from '../organisations/organisations.service.js';
 
-import type { CycleParticipantDoc } from './cycle-participants.model.js';
+import { CycleParticipantModel, type CycleParticipantDoc } from './cycle-participants.model.js';
 import type { CycleDoc } from './cycles.model.js';
 import type { SurveyType, WallClock } from './domain/types.js';
 
@@ -138,25 +142,55 @@ export async function mailSamplingClosed(cycle: CycleDoc, participants: CyclePar
 }
 
 /** One `sampling-reminder` run for one participant: "closes in N days · selected / required". */
-export async function mailSamplingReminder(cycle: CycleDoc, participant: CycleParticipantDoc, now: Date): Promise<{ acoId: string; to: string[] }> {
+export async function mailSamplingReminder(cycle: CycleDoc, participant: CycleParticipantDoc, now: Date, ctx?: RequestContext): Promise<{ acoId: string; to: string[] }> {
   const operator = (await operatorsOf([participant])).get(idString(participant.acoId));
   const to: string[] = [];
   for (const admin of await acoAdminRecipients(participant.acoId)) {
-    await send({
-      template: 'sampling-reminder',
-      to: admin.email,
-      vars: {
-        adminName: admin.name,
-        operatorName: operator?.name ?? 'your organisation',
-        cycleName: cycle.name,
-        closesInDays: daysUntil(cycle.sampling.end.utc, now),
-        samplingEnd: formatWall(cycle.sampling.end.wall),
-        tz: cycle.tz,
-        required: participant.requiredSampleSize,
-        selected: participant.sampling.selectedCount,
-      },
-      refs: { cycleId: idString(cycle._id), acoId: idString(participant.acoId), userId: admin.userId },
-    });
+    const deliver = async () => {
+      const notification = await send({
+        template: 'sampling-reminder',
+        to: admin.email,
+        vars: {
+          adminName: admin.name,
+          operatorName: operator?.name ?? 'your organisation',
+          cycleName: cycle.name,
+          closesInDays: daysUntil(cycle.sampling.end.utc, now),
+          samplingEnd: formatWall(cycle.sampling.end.wall),
+          tz: cycle.tz,
+          required: participant.requiredSampleSize,
+          selected: participant.sampling.selectedCount,
+        },
+        refs: { cycleId: idString(cycle._id), acoId: idString(participant.acoId), userId: admin.userId },
+      });
+      if (ctx) {
+        await audit(ctx, {
+          action: notification.status === 'SENT' ? 'sampling.reminder.sent' : 'sampling.reminder.failed',
+          entity: 'notification',
+          entityId: notification.id,
+          orgId: idString(participant.acoId),
+          after: { cycleId: idString(cycle._id), to: notification.to, status: notification.status },
+        });
+      }
+      if (notification.status !== 'SENT') {
+        throw new AppError('PRECONDITION_FAILED', 'Sampling reminder delivery failed', { notificationId: notification.id, acoId: idString(participant.acoId) });
+      }
+      if (ctx) {
+        // Record each success even if a later recipient fails during this run.
+        await CycleParticipantModel.updateOne({ _id: participant._id }, { $max: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
+      }
+      return notification.id;
+    };
+    if (ctx) {
+      const result = await once(
+        'cycles.manualSamplingReminder',
+        `${idString(cycle._id)}:${idString(participant.acoId)}:${admin.email.trim().toLowerCase()}`,
+        String(Math.floor(now.getTime() / (12 * 60 * 60 * 1000))),
+        deliver,
+      );
+      if (!result.ran) continue;
+    } else {
+      await deliver();
+    }
     to.push(admin.email);
   }
   return { acoId: idString(participant.acoId), to };

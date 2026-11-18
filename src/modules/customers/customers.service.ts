@@ -59,8 +59,8 @@ export async function listCustomers(ctx: RequestContext, query: CustomerListQuer
   return pageOf(docs.map(toCustomerDto), total, query);
 }
 
-async function requireVisibleCustomer(ctx: RequestContext, id: string): Promise<CustomerDoc> {
-  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx), { _id: toId(id), deletedAt: null })).lean<CustomerDoc>();
+async function requireVisibleCustomer(ctx: RequestContext, id: string, acoId?: string): Promise<CustomerDoc> {
+  const doc = await CustomerModel.findOne(and<CustomerDoc>(customerScopeFilter(ctx, acoId), { _id: toId(id), deletedAt: null })).lean<CustomerDoc>();
   if (!doc) throw new AppError('NOT_FOUND', 'Customer not found');
   return doc;
 }
@@ -234,8 +234,8 @@ export async function reactivateCustomer(ctx: RequestContext, id: string): Promi
  * customer from selections that are not locked yet and refuses (rolling the
  * delete back) while the customer is in a locked sample of a running cycle.
  */
-export async function deleteCustomer(ctx: RequestContext, id: string): Promise<void> {
-  const before = await requireVisibleCustomer(ctx, id);
+export async function deleteCustomer(ctx: RequestContext, id: string, acoId?: string): Promise<void> {
+  const before = await requireVisibleCustomer(ctx, id, acoId);
   const deletedAt = new Date();
   await withTransaction(async (session) => {
     const result = await CustomerModel.updateOne({ _id: before._id, deletedAt: null }, { $set: { deletedAt } }, { session });

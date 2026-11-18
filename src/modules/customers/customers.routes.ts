@@ -148,6 +148,7 @@ export const customersRoutes = [
     policy: { kind: 'task', task: 'customers.delete' },
     summary: 'Delete a customer from the directory (soft; 412 while it is in a locked sample of a running cycle)',
     params: customerParams,
-    handler: ({ ctx, params }) => deleteCustomer(ctx, params.id),
+    query: acoScopeQuery,
+    handler: ({ ctx, params, query }) => deleteCustomer(ctx, params.id, query.acoId),
   }),
 ];

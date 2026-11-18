@@ -105,6 +105,13 @@ export async function saveMatrix(ctx: RequestContext, input: MatrixInput): Promi
     throw new AppError('PRECONDITION_FAILED', 'You cannot remove roles.manage from your own role');
   }
 
+  for (const entry of input.roles) {
+    const role = roleById.get(entry.roleId);
+    if (role?.code === 'SUPER_ADMIN' && role.system && tasks.some((task) => !entry.tasks.includes(task.code))) {
+      throw new AppError('PRECONDITION_FAILED', 'The Super Admin matrix is locked and must retain every task');
+    }
+  }
+
   const before = await getMatrix();
   await withTransaction(async (session) => {
     const ops: AnyBulkWriteOperation<RoleTaskDoc>[] = [];
