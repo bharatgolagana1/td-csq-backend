@@ -182,7 +182,8 @@ History and its CSV export include SUBMITTED assessments and only DRAFT
 assessments with a non-null `lastSavedAt`. Never-saved drafts (including legacy
 records without `lastSavedAt`) are excluded before pagination and total counting;
 the records and draft-saving flow are unchanged.
-History defaults to `startedAt` descending across SUBMITTED and saved DRAFT rows,
+History defaults to `activityAt` descending (the date it shows: `submittedAt` on a
+submitted row, `lastSavedAt` on a saved draft) across SUBMITTED and saved DRAFT rows,
 without status grouping. `status=SUBMITTED` or `status=DRAFT` filters before
 pagination and counts only matching rows; omitting `status` restores both.
 Explicit sorting, including `submittedAt`, remains supported.

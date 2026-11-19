@@ -593,7 +593,8 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
   });
 }
 
-const SORTABLE = ['submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
+/** `activityAt` is the date the history shows: `submittedAt` on a submitted row, `lastSavedAt` on a saved draft. */
+const SORTABLE = ['activityAt', 'submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
 
 /** Compatibility tie-breakers for requested sorts; `_id` keeps page boundaries stable. */
 const HISTORY_ORDER: SortSpec = { submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 };
@@ -632,10 +633,18 @@ export async function listAssessments(ctx: RequestContext, query: AssessmentList
   if (query.customerType) requested.customerType = query.customerType;
   if (query.surveyType) requested.surveyType = query.surveyType;
   const filter = and<AssessmentDoc>(scopeFilter(ctx), HISTORY_FILTER, requested);
-  const sort = historySort(parseSort(query.sort, SORTABLE, '-startedAt'));
+  // Default: newest first by the date shown, submitted rows and saved drafts together.
+  const sort = historySort(parseSort(query.sort, SORTABLE, '-activityAt'));
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
-    AssessmentModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AssessmentDoc[]>(),
+    AssessmentModel.aggregate<AssessmentDoc>([
+      { $match: filter },
+      { $addFields: { activityAt: { $ifNull: ['$submittedAt', '$lastSavedAt'] } } },
+      { $sort: sort },
+      { $skip: skip },
+      { $limit: limit },
+      { $project: { activityAt: 0 } },
+    ]),
     AssessmentModel.countDocuments(filter),
   ]);
   return pageOf(await toHistoryRows(ctx, docs), total, query);

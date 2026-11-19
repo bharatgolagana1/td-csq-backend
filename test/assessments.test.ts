@@ -875,24 +875,26 @@ describe('history order', () => {
     await assessmentAt('draftSavedEarlier', { startedAt: new Date(now - 70 * MINUTE), lastSavedAt: new Date(now - 30 * MINUTE) });
   });
 
-  it('lists both statuses by startedAt descending by default and carries each row’s last save', async () => {
+  it('lists both statuses together by the date shown (submitted, else last saved), newest first, by default; carries each row’s last save', async () => {
     const res = await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}`);
     expect(res.status).toBe(200);
-    expect(names(res.body.data)).toEqual(['draftSavedEarlier', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedJustNow', 'submittedHourAgo']);
+    expect(names(res.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo']);
     expect(res.body.meta.total).toBe(5);
     const draft = (res.body.data as { id: string; lastSavedAt: string | null; submittedAt: string | null; answerMode: string }[]).find((row) => row.id === ids['draftSavedJustNow']);
     expect(draft).toMatchObject({ submittedAt: null, answerMode: 'SINGLE' });
     expect(draft?.lastSavedAt).toBe((await AssessmentModel.findById(ids['draftSavedJustNow']).lean())?.lastSavedAt?.toISOString());
     expect(names(res.body.data)).not.toContain('draftNeverSaved');
-    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-startedAt`)).body.data)).toEqual(names(res.body.data));
+    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-activityAt`)).body.data)).toEqual(names(res.body.data));
+    // By start (no longer the default) when asked.
+    expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-startedAt`)).body.data)).toEqual(['draftSavedEarlier', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedJustNow', 'submittedHourAgo']);
     // Explicit submission sorting retains its existing behavior.
     expect(names((await superAdmin.get(`/api/v1/assessments?cycleId=${order.id}&sort=-submittedAt`)).body.data)).toEqual(['submittedLatest', 'submittedHourAgoToo', 'submittedHourAgo', 'draftSavedJustNow', 'draftSavedEarlier']);
   });
 
   it('filters each status before pagination, reports filtered totals, and restores both when omitted', async () => {
     for (const [status, expected] of [
-      ['SUBMITTED', ['submittedHourAgoToo', 'submittedLatest', 'submittedHourAgo']],
-      ['DRAFT', ['draftSavedEarlier', 'draftSavedJustNow']],
+      ['SUBMITTED', ['submittedLatest', 'submittedHourAgoToo', 'submittedHourAgo']],
+      ['DRAFT', ['draftSavedJustNow', 'draftSavedEarlier']],
     ] as const) {
       const paged: (string | undefined)[] = [];
       for (const page of [1, 2]) {
@@ -909,7 +911,7 @@ describe('history order', () => {
     }
     const restored = await adminA.get(`/api/v1/assessments?cycleId=${order.id}`);
     expect(restored.body.meta.total).toBe(5);
-    expect(names(restored.body.data)).toEqual(['draftSavedEarlier', 'submittedHourAgoToo', 'submittedLatest', 'draftSavedJustNow', 'submittedHourAgo']);
+    expect(names(restored.body.data)).toEqual(['draftSavedJustNow', 'submittedLatest', 'draftSavedEarlier', 'submittedHourAgoToo', 'submittedHourAgo']);
     const otherOperator = await adminB.get(`/api/v1/assessments?cycleId=${order.id}&status=DRAFT`);
     expect(otherOperator.body.data).toEqual([]);
     expect(otherOperator.body.meta.total).toBe(0);
