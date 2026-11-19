@@ -6,6 +6,7 @@ import { AuditModel } from '../src/modules/audit/audit.model.js';
 import { CycleParticipantModel } from '../src/modules/cycles/cycle-participants.model.js';
 import { CycleModel } from '../src/modules/cycles/cycles.model.js';
 import { fromInstant } from '../src/modules/cycles/domain/windows.js';
+import { runSamplingReminders, SAMPLING_REMINDER_JOB } from '../src/modules/cycles/reminders.service.js';
 import { NotificationModel } from '../src/modules/notifications/notifications.model.js';
 import { configureNotifications } from '../src/modules/notifications/notifications.service.js';
 import { seedSurveys } from '../src/seed/surveys.js';
@@ -25,6 +26,13 @@ const target = () => idString(operator.org._id);
 const configure = (deliver = vi.fn(async () => { /* Successful transport. */ })) => {
   configureNotifications({ transport: { channel: 'LOG', deliver }, from: 'test@csq.local', webUrl: 'http://localhost:5173', brandName: 'CSQ' });
   return deliver;
+};
+/** A transport that refuses mail to one address and delivers the rest. */
+const failFor = (email: string) => {
+  configureNotifications({
+    transport: { channel: 'LOG', deliver: async (message: { to: string }) => { if (message.to === email) throw new Error('Mailbox unavailable'); } },
+    from: 'test@csq.local', webUrl: 'http://localhost:5173', brandName: 'CSQ',
+  });
 };
 
 beforeAll(async () => {
@@ -115,15 +123,58 @@ describe('manual sampling reminders', () => {
     }
   });
 
-  it('rejects expired or future windows even before the clock updates status', async () => {
+  it('rejects an expired window before the clock closes it, but not one opened early by hand', async () => {
     const cycle = await CycleModel.findById(cycleId).lean();
-    for (const window of [{ 'sampling.end.utc': new Date(Date.now() - DAY) }, { 'sampling.start.utc': new Date(Date.now() + DAY) }]) {
-      await CycleModel.updateOne({ _id: cycleId }, { $set: window });
-      try {
-        expectError(await platform.post(url()).send({ kind: 'SAMPLING', acoId: target() }), 412, 'PRECONDITION_FAILED');
-      } finally {
-        await CycleModel.updateOne({ _id: cycleId }, { $set: { sampling: cycle!.sampling } });
-      }
+    await CycleModel.updateOne({ _id: cycleId }, { $set: { 'sampling.end.utc': new Date(Date.now() - DAY) } });
+    try {
+      const over = await platform.post(url()).send({ kind: 'SAMPLING', acoId: target() });
+      expectError(over, 412, 'PRECONDITION_FAILED');
+      expect(over.body.error.message).toMatch(/^Sampling is over/);
+    } finally {
+      await CycleModel.updateOne({ _id: cycleId }, { $set: { sampling: cycle!.sampling } });
+    }
+    // SAMPLING_OPEN before the window's start: ACFI opened sampling early, so reminders go out.
+    await CycleModel.updateOne({ _id: cycleId }, { $set: { 'sampling.start.utc': new Date(Date.now() + DAY / 2) } });
+    try {
+      expect((await platform.post(url()).send({ kind: 'SAMPLING', acoId: target() })).body.data.sent).toBe(1);
+    } finally {
+      await CycleModel.updateOne({ _id: cycleId }, { $set: { sampling: cycle!.sampling } });
+    }
+  });
+
+  it('keeps reminding the other operators when one delivery fails, then retries only that one', async () => {
+    failFor(other.user.email);
+    const failed = await platform.post(url()).send({ kind: 'SAMPLING' });
+    expectError(failed, 412, 'PRECONDITION_FAILED');
+    expect(failed.body.error.message).toBe('Could not deliver 1 of 2 sampling reminders (1 sent). See Notifications for the error; sending again retries only the failed ones.');
+    expect(failed.body.error.details).toEqual({ sent: 1, failed: [{ acoId: idString(other.org._id), to: other.user.email }] });
+    expect(await NotificationModel.countDocuments({ template: 'sampling-reminder', to: operator.user.email, status: 'SENT' })).toBe(1);
+    const deliver = configure();
+    expect((await platform.post(url()).send({ kind: 'SAMPLING' })).body.data.sent).toBe(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(await NotificationModel.countDocuments({ template: 'sampling-reminder', to: operator.user.email })).toBe(1);
+    expect(await NotificationModel.countDocuments({ template: 'sampling-reminder', to: other.user.email, status: 'SENT' })).toBe(1);
+  });
+
+  it('the clock makes one attempt per scheduled reminder: a failed address is not retried every tick', async () => {
+    const cycle = await CycleModel.findById(cycleId).lean();
+    // One reminder on the day after sampling opened, at 09:00 local; due well before the window ends.
+    await CycleModel.updateOne({ _id: cycleId }, { $set: { 'reminders.sampling': { count: 1, everyDays: 1 }, publishedAt: null } });
+    await CycleParticipantModel.updateMany({ cycleId }, { $set: { 'reminders.sent': 0 } });
+    const now = new Date(cycle!.sampling.end.utc.getTime() - 60_000);
+    failFor(other.user.email);
+    try {
+      await runSamplingReminders(now);
+      const rows = await JobModel.find({ type: SAMPLING_REMINDER_JOB }).lean();
+      // Three participants (one has no admin to mail); none is left FAILED for the next tick to retry.
+      expect(rows.map((row) => row.status)).toEqual(['DONE', 'DONE', 'DONE']);
+      expect(await NotificationModel.countDocuments({ template: 'sampling-reminder', to: other.user.email, status: 'FAILED' })).toBe(1);
+      await runSamplingReminders(new Date(now.getTime() + 30_000));
+      expect(await NotificationModel.countDocuments({ template: 'sampling-reminder' })).toBe(2);
+    } finally {
+      await JobModel.deleteMany({ type: SAMPLING_REMINDER_JOB });
+      await CycleModel.updateOne({ _id: cycleId }, { $set: { reminders: cycle!.reminders, publishedAt: cycle!.publishedAt } });
+      await CycleParticipantModel.updateMany({ cycleId }, { $set: { 'reminders.sent': 0 } });
     }
   });
 

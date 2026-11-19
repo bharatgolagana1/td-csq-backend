@@ -5,7 +5,6 @@
 import type { Types } from 'mongoose';
 
 import type { RequestContext } from '../../core/auth/session.js';
-import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
 import { once } from '../../core/scheduler.js';
 import { audit } from '../audit/audit.service.js';
@@ -141,57 +140,78 @@ export async function mailSamplingClosed(cycle: CycleDoc, participants: CyclePar
   return result;
 }
 
-/** One `sampling-reminder` run for one participant: "closes in N days · selected / required". */
-export async function mailSamplingReminder(cycle: CycleDoc, participant: CycleParticipantDoc, now: Date, ctx?: RequestContext): Promise<{ acoId: string; to: string[] }> {
+/** Thrown inside a manual reminder's `once()` slot so the slot is FAILED and a later send retries it. */
+class ReminderDeliveryFailed extends Error {}
+
+const MANUAL_REMINDER_SLOT_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * One `sampling-reminder` run for one participant: "closes in N days ·
+ * selected / required". `to` lists the admins mailed, `failed` those whose
+ * delivery failed (the notification history holds the error).
+ *
+ * The clock's run (no `ctx`) makes one attempt per admin, as `once()` per
+ * scheduled reminder already guarantees. A manual run (`ctx`) claims a
+ * `once()` slot per admin and UTC half-day: a repeated send in that half-day
+ * skips the admins already mailed and retries only failed ones, and every
+ * attempt is audited.
+ */
+export async function mailSamplingReminder(
+  cycle: CycleDoc,
+  participant: CycleParticipantDoc,
+  now: Date,
+  ctx?: RequestContext,
+): Promise<{ acoId: string; to: string[]; failed: string[] }> {
   const operator = (await operatorsOf([participant])).get(idString(participant.acoId));
+  const acoId = idString(participant.acoId);
   const to: string[] = [];
+  const failed: string[] = [];
   for (const admin of await acoAdminRecipients(participant.acoId)) {
-    const deliver = async () => {
-      const notification = await send({
-        template: 'sampling-reminder',
-        to: admin.email,
-        vars: {
-          adminName: admin.name,
-          operatorName: operator?.name ?? 'your organisation',
-          cycleName: cycle.name,
-          closesInDays: daysUntil(cycle.sampling.end.utc, now),
-          samplingEnd: formatWall(cycle.sampling.end.wall),
-          tz: cycle.tz,
-          required: participant.requiredSampleSize,
-          selected: participant.sampling.selectedCount,
-        },
-        refs: { cycleId: idString(cycle._id), acoId: idString(participant.acoId), userId: admin.userId },
-      });
-      if (ctx) {
-        await audit(ctx, {
-          action: notification.status === 'SENT' ? 'sampling.reminder.sent' : 'sampling.reminder.failed',
-          entity: 'notification',
-          entityId: notification.id,
-          orgId: idString(participant.acoId),
-          after: { cycleId: idString(cycle._id), to: notification.to, status: notification.status },
-        });
-      }
-      if (notification.status !== 'SENT') {
-        throw new AppError('PRECONDITION_FAILED', 'Sampling reminder delivery failed', { notificationId: notification.id, acoId: idString(participant.acoId) });
-      }
-      if (ctx) {
-        // Record each success even if a later recipient fails during this run.
-        await CycleParticipantModel.updateOne({ _id: participant._id }, { $max: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
-      }
-      return notification.id;
-    };
-    if (ctx) {
+    const mail = () => send({
+      template: 'sampling-reminder',
+      to: admin.email,
+      vars: {
+        adminName: admin.name,
+        operatorName: operator?.name ?? 'your organisation',
+        cycleName: cycle.name,
+        closesInDays: daysUntil(cycle.sampling.end.utc, now),
+        samplingEnd: formatWall(cycle.sampling.end.wall),
+        tz: cycle.tz,
+        required: participant.requiredSampleSize,
+        selected: participant.sampling.selectedCount,
+      },
+      refs: { cycleId: idString(cycle._id), acoId, userId: admin.userId },
+    });
+    if (!ctx) {
+      const notification = await mail();
+      (notification.status === 'SENT' ? to : failed).push(admin.email);
+      continue;
+    }
+    try {
       const result = await once(
         'cycles.manualSamplingReminder',
-        `${idString(cycle._id)}:${idString(participant.acoId)}:${admin.email.trim().toLowerCase()}`,
-        String(Math.floor(now.getTime() / (12 * 60 * 60 * 1000))),
-        deliver,
+        `${idString(cycle._id)}:${acoId}:${admin.email.trim().toLowerCase()}`,
+        String(Math.floor(now.getTime() / MANUAL_REMINDER_SLOT_MS)),
+        async () => {
+          const notification = await mail();
+          await audit(ctx, {
+            action: notification.status === 'SENT' ? 'sampling.reminder.sent' : 'sampling.reminder.failed',
+            entity: 'notification',
+            entityId: notification.id,
+            orgId: acoId,
+            after: { cycleId: idString(cycle._id), to: notification.to, status: notification.status },
+          });
+          if (notification.status !== 'SENT') throw new ReminderDeliveryFailed(`Delivery failed (notification ${notification.id})`);
+          // Recorded per admin, so a later failure in this run does not hide this success.
+          await CycleParticipantModel.updateOne({ _id: participant._id }, { $max: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
+          return notification.id;
+        },
       );
-      if (!result.ran) continue;
-    } else {
-      await deliver();
+      if (result.ran) to.push(admin.email);
+    } catch (error) {
+      if (!(error instanceof ReminderDeliveryFailed)) throw error;
+      failed.push(admin.email);
     }
-    to.push(admin.email);
   }
-  return { acoId: idString(participant.acoId), to };
+  return { acoId, to, failed };
 }
