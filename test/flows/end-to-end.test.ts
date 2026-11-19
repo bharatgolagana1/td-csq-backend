@@ -622,14 +622,13 @@ describe('CSQ end to end: onboarding → cycle → sampling → assessment → s
     const firstQuestion = form.body.data.categories[0].questions[0] as { id: string; commentMode: string; followUp: { options: string[] } | null };
     expect(firstQuestion).toMatchObject({ id: first, commentMode: 'REQUIRED_ON_LOW' });
 
-    // Fair without a comment is refused — the batch as a whole, naming the issue.
-    const low = expectError(await patchAnswers(token, session, [{ questionId: first, rating: 2 }]), 400, 'VALIDATION');
-    expect(JSON.stringify(low.details)).toMatch(/comment/i);
+    // Fair without a comment is allowed, including legacy REQUIRED_ON_LOW questions.
+    expect((await patchAnswers(token, session, [{ questionId: first, rating: 2 }])).status).toBe(200);
     expectError(await patchAnswers(token, session, [{ questionId: first, rating: 6 }]), 400, 'VALIDATION');
     expectError(await patchAnswers(token, session, [{ questionId: 'not-a-question', rating: 4 }]), 400, 'VALIDATION');
     expectError(await patchAnswers(token, session, [{ questionId: first, rating: 4, na: true }]), 400, 'VALIDATION');
 
-    // A comment (and a follow-up option) make the low rating acceptable; NA stands on its own.
+    // Optional comments and follow-up options accompany low ratings; NA stands on its own.
     const saved = await patchAnswers(token, session, [
       { questionId: first, rating: 2, comment: 'Acceptance takes too long at peak hours', followUp: firstQuestion.followUp ? [firstQuestion.followUp.options[0]] : [] },
       { questionId: second, na: true },

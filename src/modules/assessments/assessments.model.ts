@@ -39,7 +39,7 @@ export interface StoredAnswer {
   direction?: AnswerDirection | null;
   rating: Rating | null;
   na: boolean;
-  /** Null on an IMPORT_EXPORT answer (its section remarks carry the free text); one saved before that rule keeps its text. */
+  /** Shared question comment mirrored on each directional answer; null when absent or cleared. */
   comment: string | null;
   followUp: string[];
 }
@@ -74,6 +74,9 @@ export interface AssessmentDoc {
   answers: StoredAnswer[];
   /** Absent on documents written before section remarks existed. */
   sectionRemarks?: StoredSectionRemark[];
+  /** Original directional notes retained by the shared-comment migration. Never exposed as current comments. */
+  legacyDirectionalComments?: { questionId: string; direction?: AnswerDirection | null; comment: string | null }[];
+  sharedCommentsVersion?: number;
   answeredCount: number;
   questionCount: number;
   startedAt: Date;
@@ -89,7 +92,7 @@ const answerSchema = new Schema<StoredAnswer>(
     direction: { type: String, enum: [...ANSWER_DIRECTIONS, null], default: null },
     rating: { type: Number, enum: [...RATINGS, null], default: null },
     na: { type: Boolean, required: true, default: false },
-    comment: { type: String, default: null },
+    comment: { type: String, trim: true, maxlength: 2000, default: null },
     followUp: { type: [String], required: true, default: () => [] },
   },
   { _id: false },
@@ -119,6 +122,8 @@ const schema = new Schema<AssessmentDoc>(
     status: { type: String, enum: ASSESSMENT_STATUSES, required: true, default: 'DRAFT' },
     answers: { type: [answerSchema], required: true, default: () => [] },
     sectionRemarks: { type: [sectionRemarkSchema], required: true, default: () => [] },
+    legacyDirectionalComments: { type: [new Schema({ questionId: String, direction: String, comment: String }, { _id: false })], default: undefined },
+    sharedCommentsVersion: { type: Number },
     answeredCount: { type: Number, required: true, default: 0 },
     questionCount: { type: Number, required: true, default: 0 },
     startedAt: { type: Date, required: true },

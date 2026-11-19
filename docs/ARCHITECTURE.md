@@ -133,7 +133,7 @@ assessment), `scoring` (scores, airport roll-up, rankings), `reports`
 - **Responses.** Success: `{ data }` or `{ data, meta: { page, pageSize, total } }`.
   Error: `{ error: { code, message, details?, requestId } }`. Codes:
   `VALIDATION` 400, `UNAUTHENTICATED` 401, `FORBIDDEN` 403, `NOT_FOUND` 404,
-  `CONFLICT` 409, `PRECONDITION_FAILED` 412, `RATE_LIMITED` 429, `LINK_EXPIRED`
+  `CONFLICT` 409, `CYCLE_SCHEDULE_OVERLAP` 409, `PRECONDITION_FAILED` 412, `RATE_LIMITED` 429, `LINK_EXPIRED`
   410, `OTP_INVALID` 400, `INTERNAL` 500. Stack traces never leave the server.
 - **Ids** are Mongo ObjectIds serialised as `id` strings. Every document has
   `createdAt`, `updatedAt`; soft-deletable ones have `status`.
@@ -220,7 +220,7 @@ Collections and key fields (indexes in brackets).
 - `customer_imports` `{ acoId, fileName, rows, accepted, rejected, errors: [{ row, field, message }], status: VALIDATED|COMMITTED, createdBy }`
 - `samples` `{ cycleId, acoId, customerId, surveyType, state: SELECTED|LOCKED|REMOVED, addedBy, addedAt, removedAt? }` [cycleId+acoId+customerId+surveyType unique]
 - `invitations` `{ cycleId, acoId, customerId, surveyType, assessmentId?, tokenHash, state: PENDING|SENT|OPENED|VERIFIED|SUBMITTED|EXPIRED|REVOKED, email, otp { hash, expiresAt, attempts }, sentAt, openedAt, verifiedAt, submittedAt, remindersSent, lastReminderAt, expiresAt }` [tokenHash unique; cycleId+acoId+state]
-- `assessments` `{ cycleId, acoId, airportId, surveyId, surveyType, kind: CUSTOMER|SELF, answerMode: SINGLE|IMPORT_EXPORT (the cycle's at creation; absent = SINGLE), customerId?, customerType?: FF|CB, invitationId?, userId? (SELF), status: DRAFT|SUBMITTED, answers: [{ questionId, direction?: IMPORT|EXPORT (IMPORT_EXPORT only: one answer per question and direction), rating: 1..5|null, na: boolean, comment? (SINGLE only: null on an IMPORT_EXPORT answer; one saved before that rule keeps its text), followUp?: string[] }], sectionRemarks: [{ categoryId, remark (trimmed, ≤ 2000) }] (at most one per form category whatever the answer mode; a cleared remark is removed, never stored empty; absent on older documents = none), answeredCount, questionCount (×2 on IMPORT_EXPORT), startedAt, lastSavedAt, submittedAt }` [cycleId+acoId+kind; invitationId unique sparse]
+- `assessments` `{ cycleId, acoId, airportId, surveyId, surveyType, kind: CUSTOMER|SELF, answerMode: SINGLE|IMPORT_EXPORT (the cycle's at creation; absent = SINGLE), customerId?, customerType?: FF|CB, invitationId?, userId? (SELF), status: DRAFT|SUBMITTED, answers: [{ questionId, direction?: IMPORT|EXPORT (IMPORT_EXPORT only: one answer per question and direction), rating: 1..5|null, na: boolean, comment? (optional in both modes, trimmed, maximum 2000 characters, null when absent or cleared), followUp?: string[] }], sectionRemarks: [{ categoryId, remark (trimmed, ≤ 2000) }] (at most one per form category whatever the answer mode; a cleared remark is removed, never stored empty; absent on older documents = none), answeredCount, questionCount (×2 on IMPORT_EXPORT), startedAt, lastSavedAt, submittedAt }` [cycleId+acoId+kind; invitationId unique sparse]
 - `scores` `{ cycleId, acoId, surveyType, direction: SINGLE|IMPORT|EXPORT, level: QUESTION|SUBCATEGORY|CATEGORY|OVERALL, refId, customer { mean, n, naCount, byType { FF { mean, n }, CB { mean, n } } }, self { mean, n }, suppressed?: 'INSUFFICIENT_RESPONSES', rank?, rankOf?, previous?: { cycleId, mean }, delta? }` [cycleId+acoId+surveyType+direction+level+refId unique]
 - `airport_scores` `{ cycleId, airportId, surveyType, direction: SINGLE|IMPORT|EXPORT, level, refId, mean, marketShareApplied, coveredSharePct, operators: [{ acoId, mean, sharePct, suppressed }], rank, rankOf }` [cycleId+airportId+surveyType+direction+level+refId unique]
 - `notifications` `{ channel: EMAIL|LOG, template, to, subject, body, vars, refs { cycleId?, acoId?, customerId?, invitationId?, userId? }, status: QUEUED|SENT|FAILED, error?, sentAt, resendOf? }` [refs.cycleId, status]
@@ -280,6 +280,80 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `POST /cycles/:id/reminders/send` `cycles.operate` `{ kind: SAMPLING|ASSESSMENT, acoId? }` → manual reminder run (otherwise scheduled).
 - `GET /cycles/current` `cycles.view` → the cycle(s) an ACO must act on now, with the cycle strip data `{ cycle, participant, nextDeadline { kind, at } }`.
 
+Cycle schedule exclusion: each stored cycle reserves `[sampling.start.utc,
+assessment.end.utc)` only while PUBLISHED, SAMPLING_OPEN, SAMPLING_CLOSED or
+ASSESSMENT_OPEN. DRAFT, ASSESSMENT_CLOSED, SCORED and ARCHIVED are excluded from
+reservations. Multiple drafts may overlap without blocking each other.
+Early assessment closure releases dates immediately without modifying stored window
+edges; sampling closure keeps dates reserved because assessment is pending.
+Physical deletion removes a reservation. Creation, schedule/time-zone edits,
+publishing, end-date extensions and reopening check the final resolved schedule, after merging
+partial updates and deriving dates, excluding the edited cycle. Two intervals
+conflict exactly when `other.start < candidate.end && other.end > candidate.start`;
+UTC comparison follows conversion from each cycle's IANA zone. Touching boundaries
+are valid. Existing window-order validation and authorization still apply.
+Draft creation and edits validate selected windows against existing reservations
+without acquiring a reservation themselves. Publishing and reopening atomically
+recheck the final schedule; only one of concurrent overlapping draft publications
+can succeed.
+
+A conflict returns HTTP 409 `CYCLE_SCHEDULE_OVERLAP` with the validation message
+"Another cycle is already scheduled during these dates", without scheduling
+advice or additional notifications. The response includes
+`details.conflicts: [{ id, code, name, tz, endsAt }]` containing every conflict
+(`endsAt` is the assessment closing instant as an ISO UTC timestamp).
+Calendar availability reuses the existing paginated `GET /cycles` summaries:
+`id`, `status`, `tz`, `sampling` and `assessment` already include all needed data.
+PLATFORM scheduling clients fetch all pages without filters that hide reservations,
+filter reserving statuses and exclude the edited id. `/cycles/current` is scoped
+to operator actions and must not be used as a global availability source.
+Keep all dates visible and disable reserved days in the frontend, without
+availability notices or moving the minimum date to the latest closing time.
+Resolve each day's start and next day's start in the explicit calendar time zone;
+compare UTC intervals using the same strict overlap inequalities, including DST.
+Midnight ends are exclusive; avoid truncating UTC timestamps to calendar dates.
+The shared Initiation date / Sampling window component needs no backend change.
+Server validation remains authoritative for ranges and concurrent requests.
+
+`cycles.schedule.ts` acquires a real write on the singleton `global` document in
+`cycle_schedule_locks` as the first operation of each schedule transaction.
+Concurrent writers conflict on that document and the MongoDB driver retries the
+whole transaction with a fresh snapshot before checking again. A query alone
+inside a transaction would allow concurrent overlapping inserts (write skew).
+Updates read the current cycle inside that transaction before merging the patch.
+All status transitions use the same lock, serializing reservation release and
+reacquisition with schedule writes. `SAMPLING_CLOSED -> SAMPLING_OPEN` and
+`ASSESSMENT_CLOSED -> ASSESSMENT_OPEN` recheck conflicts before any status write.
+Reopening still requires a future window end and an allowed transition under the
+existing permissions. A failed reopening leaves status, schedules, audit and events
+unchanged; successful transitions keep the existing audit and event behavior.
+Publishing checks before any writes, then writes market-share snapshots,
+participants and cycle status in the same transaction. Audits, mail and events run
+only after commit, outside the retried callback. Existing cycles are preserved;
+there is no schedule migration or automatic rescheduling. The lock initializes
+automatically. Direct database scripts that write schedules must use the same
+transaction helper to preserve this invariant.
+
+Reservation checks read the actual `cycles.status` using the shared
+`RESERVING_CYCLE_STATUSES` allowlist. Neither `publishedAt` nor other historical
+metadata makes a DRAFT reserve dates. All create/edit, publish and reopening
+guards use this same query. `cycle_schedule_locks` contains only a transaction
+serialization counter, not cycle reservations or date ranges. There is no unique
+date index or separate reservation table in this implementation; do not delete
+drafts or change their dates to clear a conflict.
+
+Regression example: CSQ 2026 Q3 (`CSQ-26Q3`), DRAFT in Asia/Kolkata, with sampling
+26-27 Dec 2026 and assessment 27-28 Dec 2026, must allow Q4 to save a sampling
+start of 26 Dec 2026 unless an actually reserved cycle overlaps. Q3 must never
+appear in conflict details, even if it carries stale publication metadata.
+
+`npm start` runs the compiled `dist/server.js` without watching for changes.
+After scheduling code changes, run `npm run build` and restart that backend
+process. Rebuilding alone does not replace modules already loaded by a running
+Node process. If a draft is still named in a conflict, verify the running build
+and its database before attempting any data repair.
+
+
 ### customers (ACO scope; PLATFORM may pass `acoId`)
 - `GET /customers` [list] `customers.view` (filters `type, surveyType, status, tag`) · `POST /customers` `customers.manage` · `GET /customers/:id` · `PATCH /customers/:id` · `POST /customers/:id/deactivate` · `POST /customers/:id/reactivate` · `DELETE /customers/:id` `customers.delete` (204; drops the customer from selections that are not locked; 412 while it is in a locked sample of a running cycle — the `customer.deleted` event, which sampling handles inside the delete transaction)
 - `GET /customers/import/template` → CSV template · `POST /customers/import/validate` (multipart CSV) → `{ importId, rows, accepted, rejected, errors[], preview[] }` · `POST /customers/import/:importId/commit` → creates/updates customers (transaction).
@@ -303,22 +377,27 @@ registration link session), or a task code. All `[list]` endpoints accept
 - `GET /public/assess/:token` public → `{ state, cycle { id, name, tz, assessmentEnd }, operator { name, airport { iata, name } }, surveyType, customer { nameMasked, emailMasked, type: FF|CB }, submittedAt?, expiresAt }` (404 unknown; state EXPIRED after `expiresAt`; `tz` is the cycle's zone for showing `assessmentEnd`, `type` the stakeholder type the form will take). Moves SENT → OPENED.
 - `POST /public/assess/:token/otp` public, rate-limited 3/10 min → `{ sent: true, devOtp? }` (`devOtp` only when `DEMO_REVEAL_OTP=true`).
 - `POST /public/assess/:token/verify` `{ otp }` → `{ sessionToken, expiresAt }` (HS256, 12 h, `{ inv, asg, aco }`); 5 wrong attempts → `OTP_INVALID` until a new OTP is requested.
-- With header `x-csq-link-token`: `GET /public/assess/:token/form` → `{ survey, categories → subcategories → questions }` filtered to the customer's stakeholder type; `GET …/draft` → `{ answers, sectionRemarks: [{ categoryId, remark }], lastSavedAt }` (the form's `assessment.lastSavedAt` too, so a reopened form says when it was last saved); `PATCH …/answers` `{ answers: [{ questionId, direction?, rating?, na?, comment?, followUp? }] }` (merge by question and direction; returns progress; `direction: IMPORT|EXPORT` is required on an IMPORT_EXPORT assessment and refused on a SINGLE one; an IMPORT_EXPORT answer takes no `comment` — absent, null or empty is accepted, any text is 400 `VALIDATION` with the issue on `answers.N.comment`, so a client never loses text silently); `PATCH …/remarks` `{ sectionRemarks: [{ categoryId, remark }] }` (≤ 100 entries, `remark` trimmed, ≤ 2000; merge by category, an empty remark clears that section's; 400 `VALIDATION` with `details.issues` for a category not on the form or named twice in the batch; 412 once submitted) → `{ sectionRemarks, lastSavedAt }` with every saved remark; `GET …/readiness` → `{ answered, total, missing: [questionId], missingSectionRemarks: [categoryId], complete }` (IMPORT_EXPORT: `total` = questions × 2, `missing` entries `questionId:IMPORT|EXPORT`; `missingSectionRemarks` in form order; `complete` once both are empty); the form's `assessment` carries `answerMode`; `POST …/submit` → SUBMITTED (locks; invitation SUBMITTED; participant stats; e-mail thank-you); 412 `PRECONDITION_FAILED` with `details { missing, missingSectionRemarks }` while either is not empty.
+- With header `x-csq-link-token`: `GET /public/assess/:token/form` → `{ survey, categories → subcategories → questions }` filtered to the customer's stakeholder type; `GET …/draft` → `{ answers, sectionRemarks: [{ categoryId, remark }], lastSavedAt }` (the form's `assessment.lastSavedAt` too, so a reopened form says when it was last saved); `PATCH …/answers` `{ answers: [{ questionId, direction?, rating?, na?, comment?, followUp? }] }` (merge by question and direction; returns progress; `direction: IMPORT|EXPORT` is required on an IMPORT_EXPORT assessment and refused on a SINGLE one; `comment` is optional for every question regardless of legacy `commentMode`, trimmed, maximum 2000 characters; null or blank clears it; omission preserves it; import and export share one comment per question; conflicting explicit values in a batch are rejected); `PATCH …/remarks` `{ sectionRemarks: [{ categoryId, remark }] }` (≤ 100 entries, `remark` trimmed, ≤ 2000; merge by category, an empty remark clears that section's; 400 `VALIDATION` with `details.issues` for a category not on the form or named twice in the batch; 412 once submitted) → `{ sectionRemarks, lastSavedAt }` with every saved remark; `GET …/readiness` → `{ answered, total, missing: [questionId], missingSectionRemarks: [categoryId], complete }` (IMPORT_EXPORT: `total` = questions × 2, `missing` entries `questionId:IMPORT|EXPORT`; `missingSectionRemarks` in form order; `complete` once both are empty); the form's `assessment` carries `answerMode`; `POST …/submit` → SUBMITTED (locks; invitation SUBMITTED; participant stats; e-mail thank-you); 412 `PRECONDITION_FAILED` with `details { missing, missingSectionRemarks }` while either is not empty.
 
 ### assessments (signed-in)
-- `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType, surveyType`) → history grid rows `{ id, cycle, operator, kind, surveyType, answerMode, customerType, assessorName, assessorEmailMasked, status, progress, startedAt, lastSavedAt, submittedAt, score }`. Default sort `-submittedAt`: submitted rows newest first, then the drafts (which have no `submittedAt`) by their latest save; sorted by `submittedAt` either way the drafts stay after the submitted rows. Any sort (`submittedAt, lastSavedAt, startedAt, status, kind, surveyType, customerType, createdAt`) is followed by `-submittedAt, -lastSavedAt, -startedAt, -_id`, so ties never shift between pages.
-- `GET /assessments/:id` → read-only return (answers with question text — `comment` as stored, so null on IMPORT_EXPORT answers but for ones saved before they stopped taking comments — and `sectionRemarks: [{ categoryId, remark }]` in form order, sections without a remark left out); a customer's assessment needs `assessments.details` as well (403 `FORBIDDEN` without it; a self-assessment needs only `assessments.view`) — its remarks are part of those details. A customer's identity is revealed only to a caller holding `assessments.details`, and then only to a platform role or when `settings.revealAssessorIdentity` is on — otherwise `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
+History list, total count and CSV export share a visibility filter: SUBMITTED,
+or DRAFT with an existing, non-null `lastSavedAt`. Never-saved drafts are excluded
+before pagination, including when filtering by DRAFT. This does not delete records
+or affect draft access or saving. Existing scope and request filters still apply.
+
+- `GET /assessments` [list] `assessments.view` (filters `cycleId, acoId, kind, status, customerType, surveyType`) → history grid rows `{ id, cycle, operator, kind, surveyType, answerMode, customerType, assessorName, assessorEmailMasked, status, progress, startedAt, lastSavedAt, submittedAt, score }`. Default sort `-activityAt` — the date the history shows: `submittedAt` on a submitted row, `lastSavedAt` on a saved draft — mixes SUBMITTED and DRAFT rows newest first without grouping by status. `status=SUBMITTED` and `status=DRAFT` filter before pagination; the total counts the same filtered scope. Omitting `status` restores both statuses. Explicit sorting remains supported for compatibility: sorted by `submittedAt` either way the drafts stay after the submitted rows. Any sort (`activityAt, submittedAt, lastSavedAt, startedAt, status, kind, surveyType, customerType, createdAt`) retains the existing tie-breakers (`submittedAt, lastSavedAt, startedAt, _id`), without overriding requested keys, so ties never shift between pages.
+- `GET /assessments/:id` → read-only return (answers with question text — the shared question `comment` mirrored on both directions — and `sectionRemarks: [{ categoryId, remark }]` in form order, sections without a remark left out); a customer's assessment needs `assessments.details` as well (403 `FORBIDDEN` without it; a self-assessment needs only `assessments.view`) — its remarks are part of those details. A customer's identity is revealed only to a caller holding `assessments.details`, and then only to a platform role or when `settings.revealAssessorIdentity` is on — otherwise `assessorName`, `assessorEmailMasked`, `customerId` and `assessor.name/email` are null and `assessor.revealed` false, in the list, the return and the CSV export alike; a self-assessment is never hidden.
 - Customer scores: without `assessments.scores` a customer's history row (and its return and CSV lines) carries `score`, `importScore` and `exportScore` null; the list still shows the row. A self-assessment's scores are always shown.
 - A DRAFT has no score yet: until it is SUBMITTED its row, return and CSV lines carry `score`, `importScore` and `exportScore` null (customer or self, whatever the tasks); the answers saved so far are still listed.
 - `GET /assessments/self/:cycleId/:surveyType` `assessments.self` → the ACO's self-assessment (created on first access; carries `answers`, `sectionRemarks` and `assessment.lastSavedAt`) · `PATCH …/answers` · `PATCH …/remarks` (as on the public path) · `POST …/submit` (412 as on the public path).
 - Import / export: history rows also carry `importScore` and `exportScore` — `score` is set on a SINGLE assessment, the pair on an IMPORT_EXPORT one, the others null (the row's `answerMode` says which). `GET /assessments/:id` on IMPORT_EXPORT lists every question twice, IMPORT then EXPORT, each answer with its `direction` (as do the draft and self-assessment answers).
-- `GET /assessments/export?cycleId=` `assessments.view` → CSV (one line per question and direction; columns end `answerMode, direction, importScore, exportScore, sectionRemark` — each line carries its category's remark; `comment` is empty on IMPORT_EXPORT lines but for answers saved before they stopped taking comments). Customer lines need `assessments.details`: without it `kind=CUSTOMER` is 403 `FORBIDDEN` and an export without `kind` holds the self-assessments only (so customer remarks never leave without that task).
+- `GET /assessments/export?cycleId=` `assessments.view` → CSV (one line per question and direction; columns end `answerMode, direction, importScore, exportScore, sectionRemark` — each line carries its category's remark and the shared question `comment` on both directions). Customer lines need `assessments.details`: without it `kind=CUSTOMER` is 403 `FORBIDDEN` and an export without `kind` holds the self-assessments only (so customer remarks never leave without that task).
 
 ### scoring and reports
 - `POST /scoring/cycles/:cycleId/run` `cycles.operate` → recompute all scores for the cycle (idempotent; also run automatically at ASSESSMENT_CLOSED and nightly while open for live dashboards, flagged `provisional`); the summary lists the `directions` scored.
 - **Direction.** Every report below takes `direction?: IMPORT|EXPORT`, resolved per cycle: a SINGLE cycle reports `SINGLE` (the parameter is ignored), an IMPORT_EXPORT cycle the requested side, `IMPORT` when omitted. Every report response carries the resolved `direction: SINGLE|IMPORT|EXPORT`, and its `cycle` summary the cycle's `answerMode`. Reports read scores only through the scoring module's `getScores` / `getAirportScores` / `nationalTable`, each given the direction.
 - `GET /reports/operator/:acoId?cycleId=` `reports.operator` (ACO: own only) → dashboard payload: `{ cycle, operator, overall { customer { mean, n }, self { mean }, rank, rankOf, suppressed? }, comparison { current, previous }, feedbackDistribution: [{ rating, label, count, pct }], categories: [{ code, name, customer, self, previous, delta, subcategories[] }], byStakeholder { FF, CB }, assessorStats { total, completed, inProgress, yetToStart, readyToSend }, assessments { total, customer, self } (SUBMITTED assessments by kind, counted live) }` (`total` = invitation e-mails sent, `readyToSend` = PENDING invitations still waiting for the assessment window; the whole funnel is the report's survey type, counted from that type's invitations — `cycle_participants.stats` sums every type the operator runs, so it is not used here). No airport ranking: the operator sees its own `rank` of `rankOf` only; the airports ranked are the national report's.
-- `GET /reports/operator/:acoId/questions?cycleId=` → question-level table with comments count (an IMPORT_EXPORT cycle's answers take no comment, so its counts stay 0 but for answers saved before that rule)
+- `GET /reports/operator/:acoId/questions?cycleId=` → question-level table with comments count (counts saved comments for the selected direction)
 - `GET /reports/airport/:airportId?cycleId=` `reports.airport` → weighted airport score, operators table (platform/airport only), categories
 - `GET /reports/national?cycleId=&surveyType=` `reports.national` → airports ranked, operators ranked, category averages, participation `{ airports, operators, sampleLocked, invited, readyToSend, started, completed, pending, completionRate }` — all for the survey type asked: the participants that run it, and the funnel from that type's invitations
 - `GET /reports/comparison?acoId=&cycleIds=a,b&direction=` `reports.operator` → side-by-side; the direction is resolved per cycle (SINGLE cycles show their SINGLE figures) and each `cycles[]` entry carries its own `direction`; the top-level `direction` is SINGLE when every cycle is SINGLE, else the side shown for the IMPORT_EXPORT ones
@@ -365,16 +444,16 @@ registration link session), or a task code. All `[list]` endpoints accept
   12 h. Link expires at `assessment.end`; after that the page shows "closed".
   One invitation ⇒ one assessment; submitted answers are read-only.
 - **Form rules.** Every active question must be answered (rating or NA);
-  comment required when `commentMode` says so (REQUIRED_ON_LOW ⇒ Fair/Poor);
-  follow-up options shown on Fair/Poor. The comment rules are checked when an
-  answer is saved; readiness and submit look only at answers and section
-  remarks. On an IMPORT_EXPORT assessment the rating and follow-up rules
-  apply per direction: each question is answered for IMPORT and for EXPORT,
-  so total = questions × 2. Comments are not collected there: the
-  `commentMode` rules (REQUIRED, REQUIRED_ON_LOW, NONE) do not apply, the
-  section remarks carry the free text, and a non-empty comment is refused
-  (400 `VALIDATION`) rather than dropped. Progress = answered / total.
-  Autosave is a merge PATCH; the client may batch.
+  follow-up options apply only on Fair/Poor. Comments are optional on every
+  question in customer and self-assessments, regardless of legacy
+  `commentMode` (REQUIRED, REQUIRED_ON_LOW, OPTIONAL or NONE). Comments are
+  trimmed and limited to 2000 characters after trimming. Null or blank
+  clears a saved comment; omission preserves it. Conflicting explicit comments for one question in a batch are rejected.
+  On IMPORT_EXPORT assessments, each question is answered for IMPORT and
+  EXPORT, with one shared comment per question, so total = questions times 2.
+  Readiness and submit check answers and section remarks. Empty question
+  comments never block saving or submission. Progress = answered / total.
+  Autosave is a merge PATCH by question and direction; the client may batch.
 - **Section remarks.** Every section of the form (a category, with its
   subcategories) takes one free-text remark of up to 2000 characters, saved
   apart from the answers (`PATCH …/remarks`, a merge by category; an empty
@@ -436,3 +515,13 @@ SMTP_URL? MAIL_FROM            (no SMTP_URL ⇒ e-mails are written to the notif
 DEMO_REVEAL_OTP=false
 SCHEDULER_ENABLED=true
 ```
+
+
+Shared question comments: `migrateSharedComments()` runs at server boot before
+requests, and during demo/test setup. It handles CUSTOMER and SELF drafts and
+submitted assessments. Original non-null notes are retained verbatim in internal
+`legacyDirectionalComments`; distinct notes become labeled, combined shared text
+without truncation. Identical notes are deduplicated. Migration is idempotent
+(`sharedCommentsVersion: 1`) and preserves status and historical timestamps.
+Legacy combined text may exceed 2,000 characters; the 2,000-character limit applies
+to new comment input. Reads and CSV repeat the shared value per direction.

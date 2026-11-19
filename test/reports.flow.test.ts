@@ -145,7 +145,7 @@ let draftCycleId: string;
 let nodeIds: { INFRA: string; STORAGE: string; PROC: string };
 
 async function createCycle(code: string, acoIds: string[], airportIds: string[]): Promise<string> {
-  const now = Date.now();
+  const now = Date.now() + (code === 'RPTF-DRAFT' ? 60 * DAY : 0);
   const res = await superAdmin.post('/api/v1/cycles').send({
     name: `Reports flow ${code}`,
     code,

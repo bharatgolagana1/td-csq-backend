@@ -17,7 +17,7 @@ export type CommentMode = (typeof COMMENT_MODES)[number];
 export const SURVEY_STATUSES = ['DRAFT', 'PUBLISHED', 'RETIRED'] as const;
 export type SurveyStatus = (typeof SURVEY_STATUSES)[number];
 
-/** Fair (2) and Poor (1) are the "low" ratings that ask for a comment / follow-up. */
+/** Fair (2) and Poor (1) are the "low" ratings that allow follow-up options. */
 export const LOW_RATING_MAX = 2;
 
 export interface ScaleStep {
@@ -234,14 +234,14 @@ export function formQuestionPlaces(form: AssessmentForm): FormQuestionPlace[] {
 
 // --- answers ----------------------------------------------------------------
 
-/** One entry of a merge PATCH; it replaces the stored answer for its question (and direction). */
+/** One merge PATCH entry: replaces rating/follow-ups in its slot; an explicit comment updates the whole question. */
 export interface AnswerInput {
   questionId: string;
   /** Required on an IMPORT_EXPORT assessment, refused on a SINGLE one. */
   direction?: AnswerDirection | undefined;
   rating?: number | null | undefined;
   na?: boolean | undefined;
-  /** SINGLE only: an IMPORT_EXPORT answer takes none (null or empty is accepted, any text refused). */
+  /** Optional in both modes; trimmed, at most 2000 characters. Omission preserves it; null or blank clears it. */
   comment?: string | null | undefined;
   followUp?: string[] | undefined;
 }
@@ -251,7 +251,9 @@ export interface AnswerIssue {
   message: string;
 }
 
-export type AnswerValidation = { ok: true; answers: StoredAnswer[] } | { ok: false; issues: AnswerIssue[] };
+export type ValidatedAnswer = Omit<StoredAnswer, 'comment'> & { comment?: string | null };
+
+export type AnswerValidation = { ok: true; answers: ValidatedAnswer[] } | { ok: false; issues: AnswerIssue[] };
 
 /** The directions each question is answered in: once (no direction) on a SINGLE assessment, IMPORT and EXPORT otherwise. */
 export function answerDirections(answerMode: AnswerMode): readonly (AnswerDirection | null)[] {
@@ -271,26 +273,12 @@ function isRating(value: number): value is Rating {
   return (RATINGS as readonly number[]).includes(value);
 }
 
-/** The comment rules of one answer: the question's comment mode on a SINGLE assessment; none taken at all on an IMPORT_EXPORT one. */
-function commentIssues(question: FormQuestion, comment: string | null, rating: Rating | null, answerMode: AnswerMode, path: string): AnswerIssue[] {
-  // An IMPORT_EXPORT form collects no per-question comment (its section remarks
-  // carry the free text). Refused rather than dropped, so a client never loses text silently.
-  if (answerMode === 'IMPORT_EXPORT') {
-    return comment === null ? [] : [{ path: `${path}.comment`, message: 'an import / export answer takes no comment; write it in the section remark' }];
-  }
-  const needsComment =
-    question.commentMode === 'REQUIRED' || (question.commentMode === 'REQUIRED_ON_LOW' && isLowRating(rating));
-  if (needsComment && comment === null) {
-    const why = question.commentMode === 'REQUIRED' ? 'this question' : 'a Fair or Poor rating';
-    return [{ path: `${path}.comment`, message: `a comment is required for ${why}` }];
-  }
-  if (question.commentMode === 'NONE' && comment !== null) {
-    return [{ path: `${path}.comment`, message: 'this question takes no comment' }];
-  }
-  return [];
+function normalizedComment(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? '';
+  return text === '' ? null : text;
 }
 
-function validateOne(question: FormQuestion, input: AnswerInput, answerMode: AnswerMode, path: string): { answer: StoredAnswer } | { issues: AnswerIssue[] } {
+function validateOne(question: FormQuestion, input: AnswerInput, path: string): { answer: ValidatedAnswer } | { issues: AnswerIssue[] } {
   const issues: AnswerIssue[] = [];
   const na = input.na ?? false;
   const rawRating = input.rating ?? null;
@@ -303,7 +291,7 @@ function validateOne(question: FormQuestion, input: AnswerInput, answerMode: Ans
   else if (rating === null && !na) issues.push({ path: `${path}.rating`, message: 'needs a rating from 1 to 5 or NA' });
   if (rating !== null && na) issues.push({ path: `${path}.na`, message: 'a rating and NA are exclusive' });
 
-  issues.push(...commentIssues(question, comment, rating, answerMode, path));
+  if (comment !== null && comment.length > 2000) issues.push({ path: `${path}.comment`, message: 'must be at most 2000 characters' });
 
   if (followUp.length > 0) {
     if (question.followUp === null) {
@@ -321,22 +309,22 @@ function validateOne(question: FormQuestion, input: AnswerInput, answerMode: Ans
   }
 
   if (issues.length > 0) return { issues };
-  return { answer: { questionId: question.id, ...(input.direction ? { direction: input.direction } : {}), rating, na, comment, followUp: [...followUp] } };
+  return { answer: { questionId: question.id, ...(input.direction ? { direction: input.direction } : {}), rating, na, ...(input.comment !== undefined ? { comment } : {}), followUp: [...followUp] } };
 }
 
 /**
  * Validates a batch of answers against the form (§7 "Form rules"): the
  * question must be on the form, exactly one of rating / NA, follow-up
  * options only on Fair / Poor and only from the question's list. A SINGLE
- * assessment takes no direction, and a comment where the comment mode
- * demands it (none where it forbids it). An IMPORT_EXPORT assessment needs
- * the direction on every answer and takes no comment whatever the comment
- * mode: an empty one is fine, a non-empty one is an issue.
+ * assessment takes no direction; IMPORT_EXPORT needs one on every answer.
+ * Comments are optional on every question regardless of legacy commentMode,
+ * trimmed and limited to 2000 characters; null or blank clears them.
  */
 export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInput[], answerMode: AnswerMode = 'SINGLE'): AnswerValidation {
   const byId = new Map(formQuestions(form).map((question) => [question.id, question]));
   const issues: AnswerIssue[] = [];
-  const answers: StoredAnswer[] = [];
+  const answers: ValidatedAnswer[] = [];
+  const comments = new Map<string, string | null>();
   const seen = new Set<string>();
   inputs.forEach((input, index) => {
     const path = `answers.${index}`;
@@ -360,21 +348,54 @@ export function validateAnswers(form: AssessmentForm, inputs: readonly AnswerInp
       return;
     }
     seen.add(key);
-    const result = validateOne(question, input, answerMode, path);
+    if (input.comment !== undefined) {
+      const comment = normalizedComment(input.comment);
+      if (comments.has(input.questionId) && comments.get(input.questionId) !== comment) {
+        issues.push({ path: `${path}.comment`, message: 'conflicting comments for the same question' });
+      }
+      comments.set(input.questionId, comment);
+    }
+    const result = validateOne(question, input, path);
     if ('issues' in result) issues.push(...result.issues);
     else answers.push(result.answer);
   });
   return issues.length > 0 ? { ok: false, issues } : { ok: true, answers };
 }
 
-/** Merge by question (and direction): an incoming answer replaces the stored one in the same slot; the rest stay. */
-export function mergeAnswers(existing: readonly StoredAnswer[], incoming: readonly StoredAnswer[]): StoredAnswer[] {
-  const merged = new Map(existing.map((answer) => [answerKey(answer), answer]));
-  for (const answer of incoming) merged.set(answerKey(answer), answer);
-  return [...merged.values()];
+/** One shared value per question, including lossless consolidation of legacy directional notes. */
+export function sharedComments(answers: readonly StoredAnswer[]): Map<string, string | null> {
+  const groups = new Map<string, StoredAnswer[]>();
+  for (const answer of answers) groups.set(answer.questionId, [...(groups.get(answer.questionId) ?? []), answer]);
+  return new Map([...groups].map(([id, entries]) => {
+    const notes = entries.flatMap((entry) => {
+      const comment = normalizedComment(entry.comment);
+      return comment === null ? [] : [{ ...entry, comment }];
+    });
+    const distinct = new Set(notes.map((entry) => entry.comment));
+    const comment = distinct.size > 1
+      ? [...notes].sort((a, b) => (a.direction ?? '').localeCompare(b.direction ?? '')).map((entry) => `${entry.direction ?? 'SINGLE'}: ${entry.comment}`).join('\n\n')
+      : notes[0]?.comment ?? null;
+    return [id, comment];
+  }));
 }
 
-export function isAnswered(answer: StoredAnswer): boolean {
+export function sharedAnswers(answers: readonly StoredAnswer[]): StoredAnswer[] {
+  const comments = sharedComments(answers);
+  return answers.map((answer) => ({ ...answer, comment: comments.get(answer.questionId) ?? null }));
+}
+
+/** Ratings/follow-ups replace their slot; explicit comments update every slot of the question. */
+export function mergeAnswers(existing: readonly StoredAnswer[], incoming: readonly ValidatedAnswer[]): StoredAnswer[] {
+  const comments = sharedComments(existing);
+  const merged = new Map(existing.map((answer) => [answerKey(answer), answer]));
+  for (const answer of incoming) {
+    if (answer.comment !== undefined) comments.set(answer.questionId, answer.comment);
+    merged.set(answerKey(answer), { ...answer, comment: null });
+  }
+  return [...merged.values()].map((answer) => ({ ...answer, comment: comments.get(answer.questionId) ?? null }));
+}
+
+export function isAnswered(answer: Pick<StoredAnswer, 'rating' | 'na'>): boolean {
   return answer.rating !== null || answer.na;
 }
 
@@ -391,7 +412,7 @@ export interface Readiness {
  * or NA) — on an IMPORT_EXPORT assessment once per direction, so `total` is
  * twice the questions.
  */
-export function readinessOf(form: AssessmentForm, answers: readonly StoredAnswer[], answerMode: AnswerMode = 'SINGLE'): Readiness {
+export function readinessOf(form: AssessmentForm, answers: readonly ValidatedAnswer[], answerMode: AnswerMode = 'SINGLE'): Readiness {
   const answered = new Set(answers.filter(isAnswered).map(answerKey));
   const directions = answerDirections(answerMode);
   const slots = formQuestions(form).flatMap((question) => directions.map((direction) => answerKey({ questionId: question.id, direction })));

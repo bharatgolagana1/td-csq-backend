@@ -116,8 +116,8 @@ describe('participant flow', () => {
   it('autosave in batches → progress climbs; readiness lists what is left (answers and section remarks); submit waits for 100 %', async () => {
     const [first, second, third] = questions;
     expect(first?.commentMode).toBe('REQUIRED_ON_LOW');
-    // A Fair rating needs its comment (and may carry follow-up options).
-    await expect(patchAnswers(assessmentId, [{ questionId: first!.id, rating: 2 }])).rejects.toMatchObject({ code: 'VALIDATION' });
+    // A Fair rating may carry an optional comment and follow-up options.
+    expect(await patchAnswers(assessmentId, [{ questionId: first!.id, rating: 2 }])).toMatchObject({ answered: 1, total: 27, pct: 4 });
     const followUp = first!.followUp ? [first!.followUp.options[0]!] : [];
     expect(await patchAnswers(assessmentId, [{ questionId: first!.id, rating: 2, comment: 'Acceptance queue is slow', followUp }])).toMatchObject({ answered: 1, total: 27, pct: 4 });
     expect(await patchAnswers(assessmentId, [{ questionId: second!.id, na: true }, { questionId: third!.id, rating: 4 }])).toMatchObject({ answered: 3, pct: 11 });

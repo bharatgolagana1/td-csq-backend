@@ -17,6 +17,8 @@ import { findOrganisationsByIds } from '../organisations/organisations.service.j
 import { getSettingsDoc } from '../settings/settings.service.js';
 
 import {
+  sharedAnswers,
+  sharedComments,
   answerDirections,
   answerKey,
   formQuestionPlaces,
@@ -225,7 +227,7 @@ export async function getDraft(assessmentId: string): Promise<DraftDto> {
   return {
     id: idString(doc._id),
     status: doc.status,
-    answers: doc.answers.map(toAnswerDto),
+    answers: sharedAnswers(doc.answers).map(toAnswerDto),
     sectionRemarks: sectionRemarksOf(doc).map(toSectionRemarkDto),
     progress: progressOf(doc.answeredCount, doc.questionCount),
     lastSavedAt: doc.lastSavedAt?.toISOString() ?? null,
@@ -438,7 +440,7 @@ export async function getOrCreateSelf(ctx: RequestContext, cycleId: string, surv
 export async function getSelfAssessment(ctx: RequestContext, cycleId: string, surveyType: SurveyType): Promise<SelfAssessmentDto> {
   const doc = await getOrCreateSelfDoc(ctx, cycleId, surveyType);
   const form = await selfForm(doc.surveyId);
-  return { ...formView(doc, form), answers: doc.answers.map(toAnswerDto), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
+  return { ...formView(doc, form), answers: sharedAnswers(doc.answers).map(toAnswerDto), sectionRemarks: sectionRemarksInFormOrder(form, doc) };
 }
 
 export async function patchSelfAnswers(
@@ -497,7 +499,7 @@ export async function listSubmitted(cycleId: string, acoId: string, kind?: Asses
     customerId: doc.customerId ? idString(doc.customerId) : null,
     ...(doc.customerType ? { customerType: doc.customerType } : {}),
     submittedAt: doc.submittedAt?.toISOString() ?? doc.updatedAt.toISOString(),
-    answers: doc.answers.map(toAnswerDto),
+    answers: sharedAnswers(doc.answers).map(toAnswerDto),
   }));
 }
 
@@ -591,13 +593,14 @@ async function toHistoryRows(ctx: RequestContext, docs: readonly AssessmentDoc[]
   });
 }
 
-const SORTABLE = ['submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
+/** `activityAt` is the date the history shows: `submittedAt` on a submitted row, `lastSavedAt` on a saved draft. */
+const SORTABLE = ['activityAt', 'submittedAt', 'lastSavedAt', 'startedAt', 'status', 'kind', 'surveyType', 'customerType', 'createdAt'] as const;
 
-/** Newest submission first, then the drafts by their latest save, then by start; `_id` last so a page boundary never splits ties differently. */
+/** Compatibility tie-breakers for requested sorts; `_id` keeps page boundaries stable. */
 const HISTORY_ORDER: SortSpec = { submittedAt: -1, lastSavedAt: -1, startedAt: -1, _id: -1 };
 
 /**
- * The history's sort: the requested keys, then the default order for ties.
+ * The history's sort: the requested keys, then compatibility tie-breakers.
  * Sorting by `submittedAt` (either way) keeps the drafts, which have none,
  * after every submitted row — `status` descending comes first, as
  * 'SUBMITTED' sorts after 'DRAFT' — and orders the drafts by their latest
@@ -613,6 +616,14 @@ export function historySort(requested: SortSpec): SortSpec {
   return spec;
 }
 
+/** History includes submissions and saved drafts, never drafts merely opened. */
+const HISTORY_FILTER: FilterQuery<AssessmentDoc> = {
+  $or: [
+    { status: 'SUBMITTED' },
+    { status: 'DRAFT', lastSavedAt: { $exists: true, $ne: null } },
+  ],
+};
+
 export async function listAssessments(ctx: RequestContext, query: AssessmentListQuery): Promise<Page<HistoryRowDto>> {
   const requested: FilterQuery<AssessmentDoc> = {};
   if (query.cycleId) requested.cycleId = toId(query.cycleId);
@@ -621,11 +632,19 @@ export async function listAssessments(ctx: RequestContext, query: AssessmentList
   if (query.status) requested.status = query.status;
   if (query.customerType) requested.customerType = query.customerType;
   if (query.surveyType) requested.surveyType = query.surveyType;
-  const filter = and<AssessmentDoc>(scopeFilter(ctx), requested);
-  const sort = historySort(parseSort(query.sort, SORTABLE, '-submittedAt'));
+  const filter = and<AssessmentDoc>(scopeFilter(ctx), HISTORY_FILTER, requested);
+  // Default: newest first by the date shown, submitted rows and saved drafts together.
+  const sort = historySort(parseSort(query.sort, SORTABLE, '-activityAt'));
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
-    AssessmentModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AssessmentDoc[]>(),
+    AssessmentModel.aggregate<AssessmentDoc>([
+      { $match: filter },
+      { $addFields: { activityAt: { $ifNull: ['$submittedAt', '$lastSavedAt'] } } },
+      { $sort: sort },
+      { $skip: skip },
+      { $limit: limit },
+      { $project: { activityAt: 0 } },
+    ]),
     AssessmentModel.countDocuments(filter),
   ]);
   return pageOf(await toHistoryRows(ctx, docs), total, query);
@@ -639,6 +658,7 @@ async function requireVisibleAssessment(ctx: RequestContext, id: string): Promis
 
 /** Every form question with its answer; on an IMPORT_EXPORT assessment each question twice, IMPORT then EXPORT. */
 function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], answerMode: AnswerMode): AssessmentDetailDto['answers'] {
+  const comments = sharedComments(answers);
   const bySlot = new Map(answers.map((answer) => [answerKey(answer), answer]));
   const directions = answerDirections(answerMode);
   const places = formQuestionPlaces(form).flatMap((place) => directions.map((direction) => ({ ...place, direction })));
@@ -653,7 +673,7 @@ function detailAnswers(form: AssessmentForm, answers: readonly StoredAnswer[], a
       subcategory: subcategory ? { id: subcategory.id, code: subcategory.code, name: subcategory.name } : null,
       rating: answer?.rating ?? null,
       na: answer?.na ?? false,
-      comment: answer?.comment ?? null,
+      comment: comments.get(question.id) ?? null,
       followUp: answer ? [...answer.followUp] : [],
     };
   });
@@ -715,7 +735,7 @@ export async function exportAssessmentsCsv(ctx: RequestContext, query: ExportQue
   if (query.acoId) requested.acoId = toId(query.acoId);
   if (kind) requested.kind = kind;
   if (query.status) requested.status = query.status;
-  const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
+  const docs = await AssessmentModel.find(and<AssessmentDoc>(scopeFilter(ctx), HISTORY_FILTER, requested)).sort({ startedAt: 1 }).lean<AssessmentDoc[]>();
   const rows = await toHistoryRows(ctx, docs);
 
   const forms = new Map<string, AssessmentForm>();

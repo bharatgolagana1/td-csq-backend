@@ -14,6 +14,7 @@ import { AppError } from '../../src/core/errors.js';
 import { idString } from '../../src/core/ids.js';
 import { initLogger } from '../../src/core/logger.js';
 import { scheduler } from '../../src/core/scheduler.js';
+import { migrateSharedComments } from '../../src/modules/assessments/assessments.migration.js';
 import { ensureMembership } from '../../src/modules/identity/memberships.service.js';
 import type { RoleDoc } from '../../src/modules/identity/roles.model.js';
 import { findRoleByCode } from '../../src/modules/identity/roles.service.js';
@@ -88,6 +89,7 @@ async function resetDatabase(): Promise<void> {
   await mongoose.connection.dropDatabase();
   await ensureIndexes();
   await migrateScoreDirections();
+  await migrateSharedComments();
 }
 
 export interface CreateTestAppOptions {

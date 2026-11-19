@@ -150,10 +150,17 @@ questions, subcategories: [{ …, questions }] }] }`), wrapped with the
 `assessment` and its `progress { answered, total, pct }`; a self-assessment
 carries every active question (`stakeholderType: null`). Answers are
 validated against that form (`assessments.form.ts`, pure): the question must
-be on the form, exactly one of `rating` 1–5 / `na`, a comment when
-`commentMode` is REQUIRED (or REQUIRED_ON_LOW with a Fair / Poor rating),
-none when NONE, follow-up options only on Fair / Poor and only from the
-question's list. A PATCH is a merge by question (the client may batch); a
+be on the form, exactly one of `rating` 1 to 5 / `na`, follow-up options only
+on Fair / Poor and only from the question's list. Every question accepts an
+optional `comment` in both SINGLE and IMPORT_EXPORT modes, regardless of
+legacy `commentMode` (including REQUIRED, REQUIRED_ON_LOW and NONE).
+Comments are trimmed and limited to 2,000 characters after trimming;
+null, empty or whitespace-only values clear a saved comment. Each answer
+entry replaces its rating/follow-up slot; an omitted comment preserves the saved
+question comment. Import and export share one comment, returned on both entries.
+Conflicting explicit comments for one question in a batch are rejected.
+Draft, self-assessment and assessment detail responses return saved comments.
+A PATCH is a merge by question and direction (the client may batch); a
 batch with one bad entry is refused whole with `details.issues[{ path,
 message }]`. Submit needs every question answered (412 with
 `details.missing`), locks the assessment (every later write is 412), emits
@@ -170,6 +177,16 @@ invitation; a failing listener rolls the submit back) and audits
 | GET | `/assessments/self/:cycleId/:surveyType` → form + `answers` (created on first access; ACO scope; only while the cycle is SAMPLING_OPEN … ASSESSMENT_OPEN and the operator runs that survey type) | assessments.self |
 | PATCH | `/assessments/self/:cycleId/:surveyType/answers` (`{ answers: [{ questionId, rating?, na?, comment?, followUp? }] }`) → `{ answered, total, pct, lastSavedAt }` | assessments.self |
 | POST | `/assessments/self/:cycleId/:surveyType/submit` → the assessment | assessments.self |
+
+History and its CSV export include SUBMITTED assessments and only DRAFT
+assessments with a non-null `lastSavedAt`. Never-saved drafts (including legacy
+records without `lastSavedAt`) are excluded before pagination and total counting;
+the records and draft-saving flow are unchanged.
+History defaults to `activityAt` descending (the date it shows: `submittedAt` on a
+submitted row, `lastSavedAt` on a saved draft) across SUBMITTED and saved DRAFT rows,
+without status grouping. `status=SUBMITTED` or `status=DRAFT` filters before
+pagination and counts only matching rows; omitting `status` restores both.
+Explicit sorting, including `submittedAt`, remains supported.
 
 History rows: `{ id, cycle { id, code, name }, operator { id, code, name },
 kind, surveyType, customerType, customerId, assessorName,
@@ -441,11 +458,85 @@ and stored as `{ wall, utc }`. Tasks: `cycles.view`, `cycles.manage`,
 | GET | `/cycles/current` (`?acoId=` required for PLATFORM / AIRPORT) → `[{ cycle, participant, nextDeadline }]` | cycles.view |
 | GET | `/cycles/:id` → summary + `reminders, participatingAirportIds, participatingAcoIds, surveyVersions, marketShareFrozen, participantList[]` (participants in scope, joined with operator and airport) | cycles.view |
 | PATCH | `/cycles/:id` — DRAFT: any field (windows rebuilt; `initiationDate` re-derives); afterwards only `sampling.end` / `assessment.end` extensions and `reminders` (400 otherwise; 412 once SCORED / ARCHIVED) | cycles.manage |
-| POST | `/cycles/:id/publish` → guards (all 412): DRAFT; windows ordered and sampling not over; operators ACTIVE, at a participating airport and running a survey type of the cycle; every participating airport's current market shares total 100 (the message names the airport); a PUBLISHED survey version per type (`latestPublishedVersionIds()`, unless pinned). Then: shares copied to `market_shares` under `cycleId` (through organisations, audited `marketshare.updated`), `cycle_participants` created, status PUBLISHED or SAMPLING_OPEN (`statusAfterPublish`), `cycle-published` e-mail to every ACO_ADMIN of each operator, events `cycle.published` then `cycle.transitioned` | cycles.publish |
+| POST | `/cycles/:id/publish` → guards: no schedule overlap (409); DRAFT (412); windows ordered and sampling not over; operators ACTIVE, at a participating airport and running a survey type of the cycle; every participating airport's current market shares total 100 (the message names the airport); a PUBLISHED survey version per type (`latestPublishedVersionIds()`, unless pinned). Then: shares copied to `market_shares` under `cycleId` (through organisations, audited `marketshare.updated`), `cycle_participants` created, status PUBLISHED or SAMPLING_OPEN (`statusAfterPublish`), `cycle-published` e-mail to every ACO_ADMIN of each operator, events `cycle.published` then `cycle.transitioned` | cycles.publish |
 | POST | `/cycles/:id/transition` (`{ to, reason }`) → a manual edge of the table (re-opening a closed window needs its end in the future), audited with the reason, emitted with trigger `MANUAL` | cycles.operate |
 | GET | `/cycles/:id/participants` [list] (filters `airportId, samplingStatus`; `q` over operator code / name) | cycles.view |
 | GET | `/cycles/:id/monitoring` → `{ sampling { airports, operators, sampleRequired, sampleLocked, lockedOperators }, assessment { invited, started, completed, pending, completionRate }, byAirport: [{ airportId, iata, name, operators: [{ acoId, code, name, sampling { status, selectedCount, required }, invited, started, completed }] }] }` | monitoring.view |
 | POST | `/cycles/:id/reminders/send` (`{ kind: SAMPLING\|ASSESSMENT, acoId? }`) → `{ kind, sent, recipients }`; SAMPLING mails the unlocked participants now (412 unless SAMPLING_OPEN); ASSESSMENT is forwarded to the sender invitations registers with `registerAssessmentReminderSender` (412 until then) | cycles.operate |
+
+Only cycles in PUBLISHED, SAMPLING_OPEN, SAMPLING_CLOSED and ASSESSMENT_OPEN
+reserve their complete schedule `[sampling.start, assessment.end)`. ASSESSMENT_CLOSED,
+SCORED and ARCHIVED cycles do not reserve dates. DRAFT cycles also do not reserve
+dates: overlapping drafts may coexist, and a draft cannot block another cycle.
+Closing assessment early releases the reservation immediately without changing the saved schedule; closing sampling
+keeps it reserved because assessment is still pending. Dates are interpreted in
+each cycle's `tz` and compared as UTC instants; an exact end/start boundary is allowed.
+Creation, schedule/time-zone edits, publishing, deadline extensions and reopening reject
+conflicts with HTTP **409** and code **`CYCLE_SCHEDULE_OVERLAP`**. Partial edits
+are merged with the saved cycle and derived dates are resolved before checking;
+the cycle being edited or reopened is excluded. Draft creation and edits still
+validate selected windows against existing reserved cycles, but do not acquire a
+reservation. Publishing and reopening atomically recheck the final schedule before
+changing status, auditing or emitting events. Only one of concurrent overlapping
+draft publications can succeed. Reopening still requires a future window end.
+Rejected requests use the validation message "Another cycle is already scheduled
+during these dates" without scheduling advice or extra notifications. Its details are:
+
+```json
+{
+  "conflicts": [
+    { "id": "...", "code": "CSQ-2027-H1", "name": "CSQ 2027 H1", "tz": "Asia/Kolkata", "endsAt": "2027-05-11T18:30:00.000Z" }
+  ]
+}
+```
+
+`endsAt` is the assessment closing timestamp in UTC. All conflicts are returned.
+For calendar availability, reuse `GET /api/v1/cycles`: summaries already include
+`id`, `status`, `tz`, `sampling` and `assessment`, with both `wall` and `utc` edges.
+The PLATFORM scheduling caller can see all cycles. Fetch every page using
+`meta.total` (`pageSize` defaults to 25, maximum 200), without search, type,
+airport or operator filters that could hide reservations. Optionally fetch each
+reserving status separately; `status` accepts one value per request.
+Filter to the four reserving statuses above and omit the edited cycle's `id`.
+Do not use `publishedAt` or `/cycles/current` to determine reservations.
+Keep every calendar date visible and disable reserved dates in the frontend;
+do not set a minimum date to the latest cycle end or show availability messages.
+Convert UTC intervals to the calendar's explicit scheduling time zone before
+mapping them to days; do not slice UTC date strings or rely on the browser zone.
+A calendar day overlaps a reservation when `dayStart < reservationEnd` and
+`nextDayStart > reservationStart`, with both day boundaries resolved in that
+zone (including DST). An end exactly at local midnight does not block that day;
+an end later that day blocks the intersecting portion. Range saves still require
+server validation even when both selected endpoints appear available.
+The shared Initiation date / Sampling window calendar requires no backend API
+or schema change. Refresh availability after saving or a rejected overlap.
+
+Rejected changes preserve schedules and produce no snapshots, participants, audit
+entries, notifications or events. A shared MongoDB transaction lock serializes
+schedule writes and status transitions across server processes, so simultaneous requests cannot reserve
+overlapping dates. The existing replica-set requirement applies. Existing stored
+schedules are left unchanged; no data migration is needed. The lock document in
+`cycle_schedule_locks` is initialized automatically.
+
+Reservation checks read the actual `cycles.status` using the shared
+`RESERVING_CYCLE_STATUSES` allowlist. Neither `publishedAt` nor other historical
+metadata makes a DRAFT reserve dates. All create/edit, publish and reopening
+guards use this same query. `cycle_schedule_locks` contains only a transaction
+serialization counter, not cycle reservations or date ranges. There is no unique
+date index or separate reservation table in this implementation; do not delete
+drafts or change their dates to clear a conflict.
+
+Regression example: CSQ 2026 Q3 (`CSQ-26Q3`), DRAFT in Asia/Kolkata, with sampling
+26-27 Dec 2026 and assessment 27-28 Dec 2026, must allow Q4 to save a sampling
+start of 26 Dec 2026 unless an actually reserved cycle overlaps. Q3 must never
+appear in conflict details, even if it carries stale publication metadata.
+
+`npm start` runs the compiled `dist/server.js` without watching for changes.
+After scheduling code changes, run `npm run build` and restart that backend
+process. Rebuilding alone does not replace modules already loaded by a running
+Node process. If a draft is still named in a conflict, verify the running build
+and its database before attempting any data repair.
+
 
 Visibility: PLATFORM everything; an ACO the non-DRAFT cycles it is listed in
 and only its own participant; an AIRPORT organisation the cycles its airport
@@ -592,3 +683,13 @@ order. The lower contracts are consumed in `reports.sources.ts` only, which is
 also the seam `test/reports.test.ts` replaces; `test/reports.flow.test.ts`
 drives the real surveys, cycles and assessments modules and replaces scoring
 alone. No audit (reads only), no events, no jobs.
+
+
+Shared question comments: `migrateSharedComments()` runs at server boot before
+requests, and during demo/test setup. It handles CUSTOMER and SELF drafts and
+submitted assessments. Original non-null notes are retained verbatim in internal
+`legacyDirectionalComments`; distinct notes become labeled, combined shared text
+without truncation. Identical notes are deduplicated. Migration is idempotent
+(`sharedCommentsVersion: 1`) and preserves status and historical timestamps.
+Legacy combined text may exceed 2,000 characters; the 2,000-character limit applies
+to new comment input. Reads and CSV repeat the shared value per direction.
