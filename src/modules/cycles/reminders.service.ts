@@ -5,13 +5,14 @@
 // its sender in through `registerAssessmentReminderSender`.
 import type { Logger } from 'pino';
 
+import { assertScope, assertTask } from '../../core/auth/rbac.js';
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 import { idString } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
 import { once } from '../../core/scheduler.js';
 
-import { CycleParticipantModel, type CycleParticipantDoc } from './cycle-participants.model.js';
+import type { CycleParticipantDoc } from './cycle-participants.model.js';
 import type { CycleDoc } from './cycles.model.js';
 import { mailSamplingReminder } from './cycles.notify.js';
 import type { ReminderRunDto, SendRemindersInput } from './cycles.schemas.js';
@@ -119,6 +120,9 @@ async function unlockedParticipants(cycle: CycleDoc, acoId: string | undefined):
  * the sender the invitations module registered; 412 while none is registered.
  */
 export async function sendRemindersNow(ctx: RequestContext, cycleId: string, input: SendRemindersInput, now = new Date()): Promise<ReminderRunDto> {
+  assertTask(ctx, 'cycles.operate');
+  assertTask(ctx, 'notifications.send');
+  assertScope(ctx, 'PLATFORM');
   const cycle = await requireVisibleCycle(ctx, cycleId);
   if (input.kind === 'ASSESSMENT') {
     if (assessmentReminderSender === null) {
@@ -127,18 +131,29 @@ export async function sendRemindersNow(ctx: RequestContext, cycleId: string, inp
     const result = await assessmentReminderSender(cycleId, now, input.acoId);
     return { kind: 'ASSESSMENT', sent: result.sent, recipients: [] };
   }
-  if (cycle.status !== 'SAMPLING_OPEN') {
+  // A window ACFI opened early by hand is open; one whose end has passed is over even before the clock closes it.
+  if (cycle.status !== 'SAMPLING_OPEN' || now >= cycle.sampling.end.utc) {
     const when = cycle.status === 'DRAFT' || cycle.status === 'PUBLISHED' ? 'Sampling has not opened yet' : 'Sampling is over';
     throw new AppError('PRECONDITION_FAILED', `${when}: sampling reminders can only be sent while sampling is open`, { status: cycle.status });
   }
   const participants = await unlockedParticipants(cycle, input.acoId);
   const recipients: ReminderRunDto['recipients'] = [];
+  const failed: { acoId: string; to: string }[] = [];
   let sent = 0;
+  // Every participant is tried even when a delivery fails; the failures are reported once at the end.
   for (const participant of participants) {
-    const mail = await mailSamplingReminder(cycle, participant, now);
-    await CycleParticipantModel.updateOne({ _id: participant._id }, { $set: { 'reminders.lastAt': now, 'reminders.manualAt': now } });
-    recipients.push(mail);
+    const mail = await mailSamplingReminder(cycle, participant, now, ctx);
+    recipients.push({ acoId: mail.acoId, to: mail.to });
+    failed.push(...mail.failed.map((to) => ({ acoId: mail.acoId, to })));
     sent += mail.to.length;
   }
-  return { kind: 'SAMPLING', sent, recipients: recipients.map((r) => ({ acoId: r.acoId, to: r.to })) };
+  if (failed.length > 0) {
+    const total = sent + failed.length;
+    throw new AppError(
+      'PRECONDITION_FAILED',
+      `Could not deliver ${failed.length} of ${total} sampling reminder${total === 1 ? '' : 's'}${sent > 0 ? ` (${sent} sent)` : ''}. See Notifications for the error; sending again retries only the failed ones.`,
+      { sent, failed },
+    );
+  }
+  return { kind: 'SAMPLING', sent, recipients };
 }

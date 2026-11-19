@@ -93,6 +93,23 @@ beforeAll(async () => {
 afterAll(() => t.close());
 
 describe('DELETE /customers/:id', () => {
+  it('allows platform deletion with matching context, rejects mismatches and isolates per-row failures', async () => {
+    const first = await createCustomer({ name: 'Platform delete', email: 'platform@delete.test' });
+    const second = await createCustomer({ name: 'Keep mismatched', email: 'mismatch@delete.test' });
+    expect((await superAdmin.get('/api/v1/me')).body.data.active.tasks).toContain('customers.delete');
+    const analyst = await t.asUser({ orgType: 'ACFI', roleCode: 'ACFI_ANALYST' });
+    expectError(await analyst.delete(`${CUSTOMERS}/${first}?acoId=${acoId}`), 403, 'FORBIDDEN');
+    const outsider = await t.asUser({ orgType: 'ACO', roleCode: 'ACO_ADMIN', orgCode: 'DEL-OTHER', airportIata: 'DEL' });
+    expectError(await outsider.delete(`${CUSTOMERS}/${first}?acoId=${acoId}`), 404, 'NOT_FOUND');
+    const results = await Promise.all([
+      superAdmin.delete(`${CUSTOMERS}/${first}?acoId=${acoId}`),
+      superAdmin.delete(`${CUSTOMERS}/${second}?acoId=${idString(outsider.org._id)}`),
+    ]);
+    expect(results[0].status).toBe(204);
+    expectError(results[1], 404, 'NOT_FOUND');
+    expect((await acoAdmin.get(`${CUSTOMERS}/${second}`)).status).toBe(200);
+    expect(await AuditModel.countDocuments({ action: 'customer.deleted', entityId: second })).toBe(0);
+  });
   it('needs customers.delete; the customer leaves the directory, its page and the eligible list, and is audited', async () => {
     const id = await createCustomer({ name: 'Coromandel Logistics', email: 'ops@coromandel.test' });
 
