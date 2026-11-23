@@ -5,7 +5,7 @@ import { withTransaction } from '../../core/db.js';
 import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportsByIds, requireAirport } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
 import { countActiveMembersByOrg, ensureMembership } from '../identity/memberships.service.js';
@@ -77,16 +77,24 @@ async function toOperatorDtos(docs: OrganisationDoc[]): Promise<OperatorDto[]> {
 
 const SORTABLE = ['name', 'code', 'status', 'createdAt'] as const;
 
+function operatorSearchFilter(q: string | undefined): FilterQuery<OrganisationDoc> {
+  return searchFilter<OrganisationDoc>(q, ['code', 'name', 'legalName']);
+}
+
+export async function findMatchingOperatorIds(ctx: RequestContext, q: string): Promise<Types.ObjectId[]> {
+  return OrganisationModel.distinct('_id', and<OrganisationDoc>(operatorScopeFilter(ctx), operatorSearchFilter(q)));
+}
+
 export async function listOperators(ctx: RequestContext, query: OperatorListQuery): Promise<Page<OperatorDto>> {
   const requested: FilterQuery<OrganisationDoc> = {};
   if (query.airportId) requested.airportId = toId(query.airportId);
   if (query.status) requested.status = query.status;
   const filter = and<OrganisationDoc>(
     operatorScopeFilter(ctx),
-    searchFilter<OrganisationDoc>(query.q, ['code', 'name', 'legalName']),
+    operatorSearchFilter(query.q),
     requested,
   );
-  const sort = parseSort(query.sort, SORTABLE, 'name');
+  const sort = parsePageSort(query.sort, SORTABLE, 'name');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     OrganisationModel.find(filter).sort(sort).skip(skip).limit(limit).lean<OrganisationDoc[]>(),

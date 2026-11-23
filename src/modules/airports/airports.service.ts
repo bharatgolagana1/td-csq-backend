@@ -5,7 +5,7 @@ import type { FilterQuery, Types } from 'mongoose';
 import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
 import { OrganisationModel } from '../organisations/organisations.model.js';
 
@@ -58,7 +58,7 @@ export async function listAirports(query: AirportListQuery): Promise<Page<Airpor
   if (query.active !== undefined) filter.active = query.active;
   if (query.region) filter.region = query.region;
   if (query.state) filter.state = query.state;
-  const sort = parseSort(query.sort, SORTABLE, 'iata');
+  const sort = parsePageSort(query.sort, SORTABLE, 'iata');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     AirportModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AirportDoc[]>(),

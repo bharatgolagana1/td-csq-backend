@@ -3,7 +3,7 @@ import type { FilterQuery } from 'mongoose';
 import type { RequestContext } from '../../core/auth/session.js';
 import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
-import { escapeRegex, pageOf, parseSort, skipLimit, type Page } from '../../core/pagination.js';
+import { escapeRegex, pageOf, parsePageSort, skipLimit, type Page } from '../../core/pagination.js';
 
 import { AuditModel, type AuditDoc } from './audit.model.js';
 import type { AuditEntryDto, AuditListQuery } from './audit.schemas.js';
@@ -89,7 +89,7 @@ export async function listAudit(ctx: RequestContext, query: AuditListQuery): Pro
     const regex = new RegExp(escapeRegex(query.q), 'i');
     filter.$and = [{ $or: [{ action: regex }, { entity: regex }, { entityId: regex }, { actorEmail: regex }] }];
   }
-  const sort = parseSort(query.sort, SORTABLE, '-at');
+  const sort = parsePageSort(query.sort, SORTABLE, '-at');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     AuditModel.find(filter).sort(sort).skip(skip).limit(limit).lean<AuditDoc[]>(),

@@ -9,9 +9,9 @@ import { isSystemContext, type AnyContext } from '../../core/auth/system.js';
 import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportsByIds } from '../airports/airports.service.js';
-import { listOperators } from '../organisations/operators.service.js';
+import { findMatchingOperatorIds } from '../organisations/operators.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
 import { findOrganisationsByIds } from '../organisations/organisations.service.js';
 
@@ -124,11 +124,10 @@ export async function listParticipantsPage(ctx: RequestContext, cycleId: string,
   if (query.airportId) requested.airportId = toId(query.airportId);
   if (query.samplingStatus) requested['sampling.status'] = query.samplingStatus;
   if (query.q) {
-    const matches = await listOperators(ctx, { page: 1, pageSize: 200, q: query.q });
-    requested.acoId = { $in: matches.data.map((op) => toId(op.id)) };
+    requested.acoId = { $in: await findMatchingOperatorIds(ctx, query.q) };
   }
   const filter = and<CycleParticipantDoc>({ cycleId: toId(cycleId) }, participantScopeFilter(ctx), requested);
-  const sort = parseSort(query.sort, SORTABLE, 'createdAt');
+  const sort = parsePageSort(query.sort, SORTABLE, 'createdAt');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     CycleParticipantModel.find(filter).sort(sort).skip(skip).limit(limit).lean<CycleParticipantDoc[]>(),

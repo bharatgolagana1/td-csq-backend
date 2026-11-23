@@ -6,7 +6,7 @@ import { withTransaction } from '../../core/db.js';
 import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import type { AirportDoc } from '../airports/airports.model.js';
 import { findAirportById, findAirportsByIds } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
@@ -215,7 +215,7 @@ export async function listRegistrations(ctx: RequestContext, query: Registration
     searchFilter<RegistrationDoc>(query.q, ['organisation.name', 'organisation.legalName', 'admin.name', 'admin.email']),
     requested,
   );
-  const sort = parseSort(query.sort, SORTABLE, '-createdAt');
+  const sort = parsePageSort(query.sort, SORTABLE, '-createdAt');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     RegistrationModel.find(filter).sort(sort).skip(skip).limit(limit).lean<RegistrationDoc[]>(),

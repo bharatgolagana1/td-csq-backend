@@ -6,7 +6,7 @@ import { AppError } from '../../core/errors.js';
 import { emit, EventHandlerError } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { escapeRegex, pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { escapeRegex, pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
 import { getCycle, getParticipant } from '../cycles/cycles.service.js';
 import type { CycleType, SurveyType } from '../cycles/domain/types.js';
@@ -50,7 +50,7 @@ export async function listCustomers(ctx: RequestContext, query: CustomerListQuer
     searchFilter<CustomerDoc>(query.q, ['name', 'email', 'contactPerson']),
     requested,
   );
-  const sort = parseSort(query.sort, SORTABLE, 'name');
+  const sort = parsePageSort(query.sort, SORTABLE, 'name');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     CustomerModel.find(filter).sort(sort).skip(skip).limit(limit).lean<CustomerDoc[]>(),

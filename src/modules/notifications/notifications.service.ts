@@ -5,7 +5,7 @@ import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
 
 import { NotificationModel, type NotificationDoc, type NotificationRefs } from './notifications.model.js';
@@ -169,7 +169,7 @@ export async function listNotifications(ctx: RequestContext, query: Notification
   if (query.status) requested.status = query.status;
   // and() keeps the scope filter authoritative even when the caller passes acoId.
   const filter = and<NotificationDoc>(scopeFilter(ctx), searchFilter<NotificationDoc>(query.q, ['to', 'subject']), requested);
-  const sort = parseSort(query.sort, SORTABLE, '-createdAt');
+  const sort = parsePageSort(query.sort, SORTABLE, '-createdAt');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     NotificationModel.find(filter).sort(sort).skip(skip).limit(limit).lean<NotificationDoc[]>(),

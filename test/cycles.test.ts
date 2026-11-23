@@ -27,6 +27,7 @@ import { registerAssessmentReminderSender } from '../src/modules/cycles/reminder
 import { NotificationModel } from '../src/modules/notifications/notifications.model.js';
 import { setCurrentShare } from '../src/modules/organisations/market-share.service.js';
 import { MarketShareModel } from '../src/modules/organisations/market-shares.model.js';
+import { OrganisationModel } from '../src/modules/organisations/organisations.model.js';
 import { latestPublishedVersionIds } from '../src/modules/surveys/surveys.service.js';
 import { seedSurveys } from '../src/seed/surveys.js';
 
@@ -434,6 +435,29 @@ describe('participants, listeners and monitoring', () => {
     expect(atBom.body.data.map((p: { operator: { code: string } }) => p.operator.code)).toEqual(['CY-C']);
     const search = await superAdmin.get(`${CYCLES}/${cycle2}/participants?q=bravo`);
     expect(search.body.data.map((p: { operator: { code: string } }) => p.operator.code)).toEqual(['CY-B']);
+  });
+
+  it('finds a participant beyond the first 200 matching operators and counts only cycle matches', async () => {
+    const otherOperators = Array.from({ length: 200 }, (_, i) => ({
+      type: 'ACO' as const,
+      code: `SEARCH-FILLER-${i}`,
+      name: `AAA Bravo Cargo ${i}`,
+      airportId: toId(del),
+    }));
+    await OrganisationModel.insertMany(otherOperators);
+    try {
+      const url = `${CYCLES}/${cycle2}/participants?q=bravo&pageSize=1`;
+      const first = await superAdmin.get(url);
+      expect(first.status).toBe(200);
+      expect(first.body.data).toMatchObject([{ acoId: acoB }]);
+      expect(first.body.meta).toEqual({ page: 1, pageSize: 1, total: 1 });
+      const second = await superAdmin.get(`${url}&page=2`);
+      expect(second.status).toBe(200);
+      expect(second.body.data).toEqual([]);
+      expect(second.body.meta).toEqual({ page: 2, pageSize: 1, total: 1 });
+    } finally {
+      await OrganisationModel.deleteMany({ code: { $in: otherOperators.map(({ code }) => code) } });
+    }
   });
 
   it('GET /cycles/:id/monitoring totals and the Airport → ACO drill-down; GET /cycles carries progress', async () => {
