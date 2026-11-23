@@ -7,7 +7,7 @@ import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { audit } from '../audit/audit.service.js';
 import { send } from '../notifications/notifications.service.js';
 import type { OrganisationDoc } from '../organisations/organisations.model.js';
@@ -141,7 +141,7 @@ export async function listUsers(ctx: RequestContext, query: UserListQuery): Prom
     searchFilter<UserDoc>(query.q, ['name', 'email']),
     query.status ? { status: query.status } : {},
   );
-  const sort = parseSort(query.sort, SORTABLE, 'name');
+  const sort = parsePageSort(query.sort, SORTABLE, 'name');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     UserModel.find(filter).sort(sort).skip(skip).limit(limit).lean<UserDoc[]>(),

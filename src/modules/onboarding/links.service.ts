@@ -5,7 +5,7 @@ import type { RequestContext } from '../../core/auth/session.js';
 import { AppError } from '../../core/errors.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportById, findAirportsByIds, requireAirport } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
 import type { UserDoc } from '../identity/users.model.js';
@@ -88,7 +88,7 @@ export async function listLinks(ctx: RequestContext, query: LinkListQuery): Prom
   if (query.orgType) requested.orgType = query.orgType;
   if (query.airportId) requested.airportId = toId(query.airportId);
   const filter = and<OnboardingLinkDoc>(statusFilter(query.status, new Date()), searchFilter<OnboardingLinkDoc>(query.q, ['note']), requested);
-  const sort = parseSort(query.sort, SORTABLE, '-createdAt');
+  const sort = parsePageSort(query.sort, SORTABLE, '-createdAt');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     OnboardingLinkModel.find(filter).sort(sort).skip(skip).limit(limit).lean<OnboardingLinkDoc[]>(),

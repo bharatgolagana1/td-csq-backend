@@ -11,7 +11,7 @@ import { emit, type Events, type SurveyType } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
 import { logger } from '../../core/logger.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { once } from '../../core/scheduler.js';
 import { webAppUrl } from '../../core/web-url.js';
 import { audit } from '../audit/audit.service.js';
@@ -535,7 +535,7 @@ export async function listInvitations(ctx: RequestContext, query: InvitationList
   if (query.state) requested.state = query.state;
   if (query.surveyType) requested.surveyType = query.surveyType;
   const filter = and<InvitationDoc>(invitationScopeFilter(ctx), searchFilter<InvitationDoc>(query.q, ['email', 'customer.name']), requested);
-  const sort = parseSort(query.sort, SORTABLE, '-createdAt');
+  const sort = parsePageSort(query.sort, SORTABLE, '-createdAt');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     InvitationModel.find(filter).sort(sort).skip(skip).limit(limit).lean<InvitationDoc[]>(),

@@ -10,7 +10,7 @@ import { AppError } from '../../core/errors.js';
 import { emit } from '../../core/events.js';
 import { and } from '../../core/filters.js';
 import { idString, toId } from '../../core/ids.js';
-import { pageOf, parseSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
+import { pageOf, parsePageSort, searchFilter, skipLimit, type Page } from '../../core/pagination.js';
 import { findAirportsByIds } from '../airports/airports.service.js';
 import { audit } from '../audit/audit.service.js';
 import { auditShareChange, getMarketShare, putMarketShare, totalsHundred } from '../organisations/market-share.service.js';
@@ -175,7 +175,7 @@ export async function listCycles(ctx: RequestContext, query: CycleListQuery): Pr
   if (query.airportId) requested.participatingAirportIds = toId(query.airportId);
   if (query.acoId) requested.participatingAcoIds = toId(query.acoId);
   const filter = and<CycleDoc>(cycleScopeFilter(ctx), searchFilter<CycleDoc>(query.q, ['code', 'name']), requested);
-  const sort = parseSort(query.sort, SORTABLE, '-sampling.start.utc');
+  const sort = parsePageSort(query.sort, SORTABLE, '-sampling.start.utc');
   const { skip, limit } = skipLimit(query);
   const [docs, total] = await Promise.all([
     CycleModel.find(filter).sort(sort).skip(skip).limit(limit).lean<CycleDoc[]>(),

@@ -40,6 +40,11 @@ export function skipLimit(query: Pick<ListQuery, 'page' | 'pageSize'>): { skip: 
 
 export type SortSpec = Record<string, 1 | -1>;
 
+/** Give offset-paginated queries a consistent order when sort values tie. */
+export function parsePageSort(sort: string | undefined, allowed: readonly string[], fallback: string): SortSpec {
+  return { ...parseSort(sort, allowed, fallback), _id: 1 };
+}
+
 /**
  * Parses `sort=-createdAt,name` against an allow-list of fields. Unknown
  * fields are a VALIDATION error so sort cannot probe the schema.
